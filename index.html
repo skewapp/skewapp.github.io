@@ -1153,6 +1153,11 @@ input, textarea, select{ -webkit-user-select: text; user-select: text; }
   100%{ box-shadow: inset 0 0 0 0 transparent; }
 }
 .channel.jump-flash{ animation: skewJumpFlash 1.6s ease-out; }
+
+/* YouTube(Google)アカウント欄 */
+.yt-account{ margin-bottom: 10px; }
+.yt-account .acc-row{ display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.yt-account .acc-name{ font-weight: 700; font-size: 0.9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -4676,6 +4681,231 @@ var lastSpotifyDevices = null;
     setTimeout(() => row.classList.remove('jump-flash'), 1600);
   });
 })();
+
+// ---------- YouTube(Google)ログインとプレイリスト読み込み ----------
+// Spotifyと同じように「ログイン → 自分のプレイリスト/高く評価した曲を読み込む → Skew内で再生」できるようにする。
+const GOOGLE_CLIENT_ID = '458025174004-eb7ornrod52aspctj79vs1gt640gu1ph.apps.googleusercontent.com';
+const GOOGLE_SCOPE = 'https://www.googleapis.com/auth/youtube.readonly';
+const YT_AUTH_KEY = 'skew.youtube.auth.v1';
+let ytAccessToken = null;
+let ytTokenExpiresAt = 0;
+let ytTokenClient = null;
+let ytTokenWaiters = [];
+try{
+  const saved = JSON.parse(localStorage.getItem(YT_AUTH_KEY) || 'null');
+  if(saved && saved.token && saved.expiresAt > Date.now() + 60000){ ytAccessToken = saved.token; ytTokenExpiresAt = saved.expiresAt; }
+}catch(e){}
+function saveYtAuth(){
+  try{
+    if(ytAccessToken) localStorage.setItem(YT_AUTH_KEY, JSON.stringify({ token: ytAccessToken, expiresAt: ytTokenExpiresAt }));
+    else localStorage.removeItem(YT_AUTH_KEY);
+  }catch(e){}
+}
+function loadGoogleIdentity(){
+  if(window.google && google.accounts && google.accounts.oauth2) return Promise.resolve();
+  if(window.__skewGisPromise) return window.__skewGisPromise;
+  window.__skewGisPromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://accounts.google.com/gsi/client';
+    s.async = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error('Googleログインの読み込みに失敗しました'));
+    document.head.appendChild(s);
+  });
+  return window.__skewGisPromise;
+}
+// ページを開いた時点で読み込んでおく(ボタンを押した瞬間にログイン画面を開けるように)
+loadGoogleIdentity().catch(() => {});
+function getYtTokenClient(){
+  if(ytTokenClient) return ytTokenClient;
+  if(!(window.google && google.accounts && google.accounts.oauth2)) return null;
+  ytTokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: GOOGLE_CLIENT_ID,
+    scope: GOOGLE_SCOPE,
+    callback: (resp) => {
+      const waiters = ytTokenWaiters; ytTokenWaiters = [];
+      if(resp && resp.access_token){
+        ytAccessToken = resp.access_token;
+        ytTokenExpiresAt = Date.now() + (Number(resp.expires_in) || 3600) * 1000;
+        saveYtAuth();
+        waiters.forEach(w => w.resolve(ytAccessToken));
+        renderYouTubeAccount();
+      } else {
+        const err = new Error((resp && (resp.error_description || resp.error)) || 'Googleログインに失敗しました');
+        waiters.forEach(w => w.reject(err));
+      }
+    },
+    error_callback: (err) => {
+      const waiters = ytTokenWaiters; ytTokenWaiters = [];
+      const e = new Error(err && err.type === 'popup_closed' ? 'ログイン画面が閉じられました' : 'Googleログインに失敗しました' + (err && err.message ? ': ' + err.message : ''));
+      waiters.forEach(w => w.reject(e));
+    }
+  });
+  return ytTokenClient;
+}
+// クリックなどのユーザー操作の中で呼ぶ(ポップアップがブロックされないように)
+function requestYtToken(promptMode){
+  const client = getYtTokenClient();
+  if(!client) return Promise.reject(new Error('Googleログインの準備中です。数秒待ってからもう一度押してください'));
+  return new Promise((resolve, reject) => {
+    ytTokenWaiters.push({ resolve, reject });
+    client.requestAccessToken({ prompt: promptMode || '' });
+  });
+}
+function ytLoggedIn(){ return !!ytAccessToken && ytTokenExpiresAt > Date.now() + 30000; }
+async function ytApi(path){
+  if(!ytLoggedIn()) throw Object.assign(new Error('Googleのログインが切れました。もう一度ログインしてください'), { needLogin: true });
+  const res = await fetch('https://www.googleapis.com/youtube/v3/' + path, { headers: { 'Authorization': 'Bearer ' + ytAccessToken } });
+  const data = await res.json().catch(() => ({}));
+  if(res.status === 401){
+    ytAccessToken = null; saveYtAuth(); renderYouTubeAccount();
+    throw Object.assign(new Error('Googleのログインが切れました。もう一度ログインしてください'), { needLogin: true });
+  }
+  if(!res.ok){
+    const msg = (data.error && data.error.message) || ('status ' + res.status);
+    if(/quota/i.test(msg)) throw new Error('今日のYouTubeの利用上限に達しました。明日もう一度お試しください');
+    if(/not enabled|disabled|youtube signup|channelNotFound/i.test(msg)) throw new Error('このGoogleアカウントにはYouTubeチャンネルがありません');
+    throw new Error(msg);
+  }
+  return data;
+}
+function cleanYtArtist(s){ return String(s || '').replace(/\s*-\s*Topic$/i, '').replace(/VEVO$/i, '').trim(); }
+function cleanYtTitle(s){ return String(s || '').replace(/\s*[\(\[【](official|music|mv|video|lyric|audio|公式)[^\)\]】]*[\)\]】]/ig, '').trim(); }
+
+// --- 画面(設定の「YouTube Music」欄とプレイリスト欄)---
+(function(){
+  const panel = document.getElementById('providerPanelYoutube');
+  const setup = panel && panel.querySelector('.playback-setup');
+  if(setup){
+    const box = document.createElement('div');
+    box.className = 'yt-account';
+    box.id = 'ytAccountBox';
+    setup.insertBefore(box, setup.firstChild);
+  }
+  const importBox = document.getElementById('spotifyImportBox');
+  if(importBox){
+    const yt = document.createElement('div');
+    yt.className = 'pl-import';
+    yt.id = 'youtubeImportBox';
+    yt.innerHTML = `<button class="btn-copy btn-wide" id="loadYoutubePlaylistsBtn" type="button">YouTubeのプレイリストを読み込む</button>
+      <div class="pl-list" id="youtubePlaylistList"></div>`;
+    importBox.parentNode.insertBefore(yt, importBox.nextSibling);
+  }
+})();
+const ytAccountBox = document.getElementById('ytAccountBox');
+const ytPlaylistListEl = document.getElementById('youtubePlaylistList');
+let ytChannelTitle = '';
+async function renderYouTubeAccount(){
+  if(!ytAccountBox) return;
+  const importBox = document.getElementById('youtubeImportBox');
+  if(importBox) importBox.style.display = ytLoggedIn() ? '' : 'none';
+  if(!ytLoggedIn()){
+    ytAccountBox.innerHTML = `<button class="btn-spotify btn-connect" type="button" id="ytLoginBtn">Googleでログイン</button>
+      <p class="pb-hint">ログインすると、YouTube / YouTube Music の自分のプレイリストや「高く評価した曲」を読み込めます(ログインしなくても再生はできます)。</p>`;
+    document.getElementById('ytLoginBtn').addEventListener('click', async () => {
+      try{
+        await requestYtToken('consent');
+        showToast('Googleにログインしました');
+        if(activeProvider !== 'youtube') setActiveProvider('youtube');
+        await ensureYouTubePlayer().catch(() => {});
+        enableAutoNext();
+        saveState();
+      }catch(err){ showToast(err.message, { error: true }); }
+    });
+    return;
+  }
+  ytAccountBox.innerHTML = `<div class="acc-row"><span class="acc-name" id="ytAccName">${escapeHtml(ytChannelTitle || 'Googleにログイン中')}</span>
+    <button class="btn-copy" type="button" id="ytLogoutBtn">ログアウト</button></div>`;
+  document.getElementById('ytLogoutBtn').addEventListener('click', () => {
+    try{ if(window.google && google.accounts && google.accounts.oauth2 && ytAccessToken) google.accounts.oauth2.revoke(ytAccessToken, () => {}); }catch(e){}
+    ytAccessToken = null; ytTokenExpiresAt = 0; ytChannelTitle = ''; saveYtAuth();
+    if(ytPlaylistListEl) ytPlaylistListEl.innerHTML = '';
+    renderYouTubeAccount();
+    showToast('Googleからログアウトしました');
+  });
+  if(!ytChannelTitle){
+    try{
+      const ch = await ytApi('channels?part=snippet&mine=true');
+      ytChannelTitle = (ch.items && ch.items[0] && ch.items[0].snippet.title) || 'Googleにログイン中';
+      const el = document.getElementById('ytAccName'); if(el) el.textContent = ytChannelTitle;
+    }catch(e){ /* 名前が取れなくてもログインは有効 */ }
+  }
+}
+renderYouTubeAccount();
+
+const YT_LIKED_ID = '__yt_liked__';
+document.getElementById('loadYoutubePlaylistsBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('loadYoutubePlaylistsBtn');
+  btn.disabled = true;
+  ytPlaylistListEl.innerHTML = '<p class="pb-hint">読み込み中…</p>';
+  try{
+    if(!ytLoggedIn()) await requestYtToken('');
+    let items = [];
+    let pageToken = '';
+    do{
+      const data = await ytApi('playlists?part=snippet,contentDetails&mine=true&maxResults=50' + (pageToken ? '&pageToken=' + pageToken : ''));
+      items = items.concat(data.items || []);
+      pageToken = data.nextPageToken || '';
+    } while(pageToken && items.length < 200);
+    const row = (id, name, count, img) => `<div class="pl-row sp" data-yt="${escapeHtml(id)}" data-name="${escapeHtml(name)}">
+        ${img ? `<img src="${escapeHtml(img)}" alt="">` : ''}
+        <div class="pl-main"><span class="pl-name">${escapeHtml(name)}</span><small>${count !== null ? count + '曲' : ''}</small></div>
+        <button class="btn-copy" type="button" data-import>読み込む</button>
+      </div>`;
+    ytPlaylistListEl.innerHTML = row(YT_LIKED_ID, '♥ 高く評価した曲', null, '') + items.map(pl => {
+      const th = pl.snippet.thumbnails || {};
+      const img = (th.default || th.medium || {}).url || '';
+      return row(pl.id, pl.snippet.title, pl.contentDetails ? pl.contentDetails.itemCount : null, img);
+    }).join('');
+    if(items.length === 0) ytPlaylistListEl.insertAdjacentHTML('beforeend', '<p class="pb-hint">自分で作ったプレイリストはありませんでした</p>');
+  }catch(err){
+    console.error(err);
+    ytPlaylistListEl.innerHTML = `<p class="pb-hint">読み込めませんでした: ${escapeHtml(err.message)}</p>`;
+  }finally{
+    btn.disabled = false;
+  }
+});
+ytPlaylistListEl.addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-import]');
+  if(!btn) return;
+  const row = btn.closest('[data-yt]');
+  const plId = row.dataset.yt;
+  const name = row.dataset.name.replace(/^♥\s*/, '');
+  btn.disabled = true;
+  btn.textContent = '読み込み中…';
+  try{
+    const found = [];
+    let pageToken = '';
+    do{
+      let data;
+      if(plId === YT_LIKED_ID){
+        data = await ytApi('videos?part=snippet&myRating=like&maxResults=50' + (pageToken ? '&pageToken=' + pageToken : ''));
+        (data.items || []).forEach(v => found.push({ title: cleanYtTitle(v.snippet.title), artist: cleanYtArtist(v.snippet.channelTitle), youtubeId: v.id }));
+      } else {
+        data = await ytApi('playlistItems?part=snippet,contentDetails&maxResults=50&playlistId=' + encodeURIComponent(plId) + (pageToken ? '&pageToken=' + pageToken : ''));
+        (data.items || []).forEach(it => {
+          const vid = it.contentDetails && it.contentDetails.videoId;
+          const sn = it.snippet || {};
+          if(!vid || /^(Deleted|Private) video$/i.test(sn.title || '')) return;
+          found.push({ title: cleanYtTitle(sn.title), artist: cleanYtArtist(sn.videoOwnerChannelTitle || ''), youtubeId: vid });
+        });
+      }
+      pageToken = data.nextPageToken || '';
+    } while(pageToken && found.length < 2000);
+    if(found.length === 0) throw new Error('曲が見つかりませんでした');
+    const newTracks = found.map((t, i) => ({ id: i + 1, title: t.title, artist: t.artist, weight: 50, youtubeId: t.youtubeId, addedAt: nextAddedAt() }));
+    createPlaylist(name, newTracks);
+    if(activeProvider !== 'youtube') setActiveProvider('youtube');
+    await ensureYouTubePlayer().catch(() => {});
+    btn.textContent = '読み込み済み';
+    showToast(`「${name}」(${newTracks.length}曲)を読み込みました`);
+  }catch(err){
+    console.error(err);
+    btn.disabled = false;
+    btn.textContent = '読み込む';
+    showToast('読み込めませんでした: ' + err.message, { error: true });
+  }
+});
 
 render();
 
