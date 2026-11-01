@@ -1277,9 +1277,9 @@ input, textarea, select{ -webkit-user-select: text; user-select: text; }
         <div class="provider-panel" id="providerPanelYoutube" style="display:none;">
           <div class="playback-setup">
             <button class="btn-spotify btn-connect" id="youtubeConnectBtn">YouTube Musicを使う</button>
-            <p class="pb-hint">この画面の中で再生します。曲を探すのにYouTube Data APIキーが必要です(一度入れれば保存されます)。</p>
+            <p class="pb-hint">ボタンを押すだけで使えます(ログイン・キー入力は不要)。この画面の中で再生します。</p>
             <details class="pb-advanced" id="youtubeAdvanced">
-              <summary>APIキーの設定</summary>
+              <summary>自分のAPIキーを使う(任意)</summary>
               <label class="pb-label">YouTube Data API キー
                 <input type="text" id="youtubeApiKey" placeholder="Google Cloud ConsoleのAPIキー" autocomplete="off" autocapitalize="off">
               </label>
@@ -3650,15 +3650,19 @@ async function ensureYouTubePlayer(){
   });
 }
 
+// Skewに組み込みのYouTube Data APIキー(skewapp.github.io と http://127.0.0.1:8000 からのみ使えるよう制限済み)
+const DEFAULT_YOUTUBE_API_KEY = 'AIzaSyAQQYDlHACBo0n6jPQ2PazBlmyBoVbpqe0';
+
 // 曲名・アーティスト名からYouTube Data APIで動画を検索する
 async function searchYouTubeVideoId(track){
-  const apiKey = youtubeApiKeyInp.value.trim();
-  if(!apiKey) throw new Error('YouTube Data APIキーが入力されていません');
+  const apiKey = youtubeApiKeyInp.value.trim() || DEFAULT_YOUTUBE_API_KEY;
   const q = encodeURIComponent(`${track.title} ${track.artist || ''}`.trim());
   const res = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=1&type=video&videoCategoryId=10&q=${q}&key=${apiKey}`);
   const data = await res.json();
   if(!res.ok){
-    throw new Error((data.error && data.error.message) || 'YouTube検索に失敗しました');
+    const msg = (data.error && data.error.message) || '';
+    if(/quota/i.test(msg)) throw new Error('今日のYouTube検索の上限に達しました。一度流した曲はそのまま再生できます(上限は毎日リセットされます)');
+    throw new Error(msg || 'YouTube検索に失敗しました');
   }
   const item = data.items && data.items[0];
   return item ? item.id.videoId : null;
@@ -3673,19 +3677,16 @@ async function playTrackOnYouTube(track){
   if(!videoId){
     throw new Error(`「${track.title}」に該当する動画が見つかりませんでした`);
   }
-  track.youtubeId = videoId; // 次回以降は検索せずに済むよう覚えておく
+  if(track.youtubeId !== videoId){
+    track.youtubeId = videoId; // 次回以降は検索せずに済むよう覚えておく(検索回数の節約)
+    saveState();
+  }
   player.loadVideoById(videoId);
 }
 
 youtubeConnectBtn.addEventListener('click', async () => {
   youtubeConnectBtn.disabled = true;
   try{
-    if(!youtubeApiKeyInp.value.trim()){
-      document.getElementById('youtubeAdvanced').open = true;
-      youtubeApiKeyInp.focus();
-      setSpotifyStatus('YouTube Data APIキーを入れてから、もう一度押してください', 'error');
-      return;
-    }
     await ensureYouTubePlayer();
     enableAutoNext();
     saveState();
