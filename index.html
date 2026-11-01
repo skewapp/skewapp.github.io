@@ -1,0 +1,4693 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>Skew</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="曲ごとの「流れやすさ」を自由に調整できるシャッフルプレーヤー">
+<meta name="theme-color" content="#050505">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Skew">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=JetBrains+Mono:wght@400;600&display=swap" media="print" onload="this.media='all'">
+<style>
+
+:root{
+  /* 出現率グラデーション(#073B4C 〜 #EF476F)に色味を合わせたディープティール×コーラルピンクの
+     ダークテーマ。背景は黒、パネルはそこからわずかにティールを効かせたごく暗いトーン。 */
+  --bg: #050505;
+  --panel: #0b0f10;
+  --panel-raised: #121a1c;
+  --amber: #EF476F;
+  --amber-dim: #6e2c3c;
+  --teal: #7B415E;
+  --text: #EAF3F2;
+  --muted: #7C9599;
+  --line: #1C2426;
+}
+
+*{box-sizing:border-box;}
+body{
+  margin:0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Space Grotesk', sans-serif;
+  padding: 28px 16px 60px;
+  min-height: 100vh;
+}
+
+.wrap{ max-width: 760px; margin: 0 auto; }
+
+.layout{
+  display: block;
+}
+.main-col{ min-width: 0; }
+.side-col{ min-width: 0; }
+
+/* PCの広い画面では、曲リストと各種パネルを横に並べる2カラムレイアウトにする。
+   名前付きgrid-areaは項目が増えるたびに対応漏れで重なる事故が起きやすいため、
+   実際のDOM構造(main-col / side-col)を素直にflexで横並びにするだけのシンプルな方式にする。
+   さらに、ページ全体がビューポート(画面の高さ)に収まるようにし、
+   はみ出す分はconsole/side-colそれぞれの内部スクロールに任せる。 */
+@media (min-width: 900px){
+  html, body{ height: 100%; }
+  body{
+    padding: 24px 16px;
+    overflow: hidden;
+  }
+  .wrap{
+    max-width: 1400px;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+  .header{
+    flex: 0 0 auto;
+  }
+  .layout{
+    display: flex;
+    align-items: stretch;
+    gap: 32px;
+    flex: 1;
+    min-height: 0;
+  }
+  .main-col{
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .side-col{
+    width: 420px;
+    flex: 0 0 420px;
+    min-width: 0;
+    overflow-y: auto;
+    padding-right: 4px;
+  }
+  .sort-bar{ margin-bottom: 10px; flex: 0 0 auto; }
+  /* 20曲分の高さを上限としつつ、画面が低い場合はそれより縮めて必ず画面内に収める */
+  .console{
+    flex: 1;
+    min-height: 0;
+    max-height: calc(20 * 62.6px + 36px);
+  }
+  .now-playing{ margin-top: 0; }
+  .controls{ margin-top: 0; }
+  .header h1{ font-size: 1.9rem; }
+  body{ font-size: 1.05rem; }
+}
+
+.header{
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-end;
+  margin-bottom: 22px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 16px;
+}
+.header h1{
+  font-size: 1.5rem;
+  margin: 0 0 4px;
+  letter-spacing: 0.02em;
+}
+.header p{
+  margin:0;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-family: 'JetBrains Mono', monospace;
+}
+.badge{
+  font-family:'JetBrains Mono', monospace;
+  font-size: 0.7rem;
+  color: var(--amber);
+  border: 1px solid var(--amber-dim);
+  padding: 3px 8px;
+  border-radius: 3px;
+  letter-spacing: 0.05em;
+}
+
+.console{
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 18px 14px;
+  /* 前回の見積もり(72px/行)では実際には23曲分入ってしまったため、
+     実測ベース(1440px ÷ 23曲 ≒ 62.6px/行)に補正し、正確に20曲分の高さにする。 */
+  max-height: calc(20 * 62.6px + 36px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--amber-dim) var(--panel);
+}
+.console::-webkit-scrollbar{
+  width: 8px;
+}
+.console::-webkit-scrollbar-track{
+  background: var(--panel);
+}
+.console::-webkit-scrollbar-thumb{
+  background: var(--amber-dim);
+  border-radius: 4px;
+}
+.console::-webkit-scrollbar-thumb:hover{
+  background: var(--amber);
+}
+.search-empty{
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8rem;
+  color: var(--muted);
+  text-align: center;
+  padding: 24px 0;
+}
+
+.sort-bar{
+  display:flex;
+  align-items:center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.search-input{
+  flex: 1;
+  min-width: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.78rem;
+  padding: 9px 12px;
+  border-radius: 6px;
+}
+.search-input:focus{
+  outline: none;
+  border-color: var(--teal);
+}
+.search-input::placeholder{ color: var(--muted); }
+.sort-dropdown{
+  position: relative;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.btn-sort-main{
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 700;
+  font-size: 0.76rem;
+  background: var(--panel-raised);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+.btn-sort-main:hover{ color: var(--teal); border-color: var(--teal); }
+.sort-menu{
+  display: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 10;
+  flex-direction: column;
+  min-width: 170px;
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 8px 20px rgba(0,0,0,0.35);
+}
+.sort-menu.open{ display: flex; }
+.sort-option{
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 600;
+  font-size: 0.78rem;
+  text-align: left;
+  background: none;
+  color: var(--muted);
+  border: none;
+  border-radius: 5px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+.sort-option:hover{ background: var(--panel); color: var(--teal); }
+.sort-option.active{
+  background: var(--teal);
+  color: var(--bg);
+}
+.sort-option.active .sort-dir{ color: var(--bg); }
+.sort-dir{
+  color: var(--amber);
+  margin-left: 4px;
+}
+.color-mode-option{
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 600;
+  font-size: 0.78rem;
+  text-align: left;
+  background: none;
+  color: var(--muted);
+  border: none;
+  border-radius: 5px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+.color-mode-option:hover{ background: var(--panel); color: var(--teal); }
+.color-mode-option.active{
+  background: var(--teal);
+  color: var(--bg);
+}
+
+.spotify-panel{
+  display:flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.spotify-panel textarea{
+  width: 100%;
+  resize: vertical;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  padding: 10px 12px;
+  border-radius: 6px;
+}
+.spotify-panel textarea:focus{
+  outline: none;
+  border-color: var(--teal);
+}
+.spotify-panel textarea::placeholder{ color: var(--muted); }
+.spotify-panel-btns{
+  display:flex;
+  gap: 8px;
+  width: 100%;
+}
+.spotify-panel-btns .btn-spotify{
+  flex: 1;
+  align-self: auto;
+}
+.btn-spotify{
+  align-self: flex-end;
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 700;
+  font-size: 0.82rem;
+  white-space: nowrap;
+  background: var(--teal);
+  color: #16261F;
+  border: none;
+  border-radius: 6px;
+  padding: 10px 18px;
+  cursor: pointer;
+}
+.btn-spotify:disabled{
+  opacity: 0.5;
+  cursor: default;
+}
+.spotify-status{
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.72rem;
+  color: var(--muted);
+  min-height: 1.2em;
+  margin-bottom: 14px;
+}
+.spotify-status.error{ color: #E08A7D; }
+.spotify-status.success{ color: var(--teal); }
+
+.track-remove{
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.95rem;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.track-remove:hover{ color: #E08A7D; }
+
+.playback-panel{
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px;
+  margin-bottom: 14px;
+}
+.playback-header{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  margin-bottom: 10px;
+}
+.provider-tabs{
+  display:flex;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.provider-tab{
+  flex: 1;
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 600;
+  font-size: 0.72rem;
+  background: var(--panel-raised);
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 4px;
+  cursor: pointer;
+}
+.provider-tab:hover{ color: var(--teal); border-color: var(--teal); }
+.provider-tab.active{
+  background: var(--teal);
+  color: var(--bg);
+  border-color: var(--teal);
+}
+.yt-player{
+  margin-top: 10px;
+  border-radius: 8px;
+  overflow: hidden;
+}
+#autoPlayRow{
+  margin-top: 10px;
+}
+.playback-title{
+  font-family:'JetBrains Mono', monospace;
+  font-size: 0.72rem;
+  color: var(--muted);
+  letter-spacing: 0.08em;
+}
+.playback-conn{
+  font-family:'JetBrains Mono', monospace;
+  font-size: 0.7rem;
+  padding: 2px 8px;
+  border-radius: 3px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+.playback-conn.connected{
+  color: var(--teal);
+  border-color: var(--teal);
+}
+.playback-setup{
+  display:flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.pb-label{
+  display:flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family:'JetBrains Mono', monospace;
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+.pb-label input[type=text]{
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-family:'JetBrains Mono', monospace;
+  font-size: 0.78rem;
+  padding: 8px 10px;
+  border-radius: 6px;
+}
+.pb-label input[type=text]:focus{ outline:none; border-color: var(--teal); }
+.pb-redirect-row{
+  display:flex;
+  gap: 8px;
+}
+.pb-redirect-row input{ flex:1; min-width:0; }
+.btn-copy{
+  font-family:'Space Grotesk', sans-serif;
+  font-weight: 700;
+  font-size: 0.72rem;
+  white-space: nowrap;
+  background: var(--panel-raised);
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0 12px;
+  cursor: pointer;
+}
+.btn-copy:hover{ color: var(--teal); border-color: var(--teal); }
+.playback-device-row{
+  display:flex;
+  align-items:center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.playback-device-row select{
+  flex:1;
+  min-width: 140px;
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-family:'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  padding: 8px 10px;
+  border-radius: 6px;
+}
+.pb-toggle{
+  display:flex;
+  align-items:center;
+  gap: 6px;
+  font-family:'JetBrains Mono', monospace;
+  font-size: 0.72rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.playback-transport{
+  display:flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.btn-transport{
+  flex: 1;
+  font-size: 1.1rem;
+  background: var(--panel-raised);
+  color: var(--teal);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 0;
+  cursor: pointer;
+}
+.btn-transport:hover{ border-color: var(--teal); }
+.btn-transport:active{ transform: translateY(1px); }
+.btn-transport:disabled{ opacity: 0.4; cursor: default; }
+
+.channel{
+  display:flex;
+  flex-direction:column;
+  gap: 5px;
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--line);
+}
+.channel:last-child{ border-bottom:none; }
+
+.channel-top{
+  display:flex;
+  align-items:center;
+  gap: 12px;
+}
+.channel-top .meta{ flex: 1; }
+
+.drag-handle{
+  cursor: grab;
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1;
+  padding: 2px 2px;
+  user-select: none;
+  flex-shrink: 0;
+}
+.track-num{
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.72rem;
+  color: var(--muted);
+  min-width: 20px;
+  text-align: right;
+  flex-shrink: 0;
+}
+.drag-handle:active{ cursor: grabbing; }
+
+.channel.dragging{ opacity: 0.4; }
+.channel.drag-over{ border-top: 2px solid var(--amber); }
+.channel.selected{
+  outline: 2px solid var(--amber);
+  outline-offset: -2px;
+  border-radius: 6px;
+}
+.channel{ cursor: pointer; }
+.channel input{ cursor: initial; }
+
+.fader-row{
+  display:flex;
+  align-items:center;
+  gap: 12px;
+}
+input[type=range]{
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--panel-raised);
+  cursor: ew-resize;
+  touch-action: none;
+}
+input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  background: var(--thumb-color, var(--amber));
+  border: 2px solid var(--bg);
+  margin-top: -1px;
+}
+input[type=range]::-moz-range-thumb{
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  background: var(--thumb-color, var(--amber));
+  border: 2px solid var(--bg);
+}
+
+.meta{ min-width:0; }
+.title{
+  font-weight: 700;
+  font-size: 0.86rem;
+  white-space: nowrap;
+  overflow:hidden;
+  text-overflow: ellipsis;
+}
+.artist{
+  color: var(--muted);
+  font-size: 0.68rem;
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow:hidden;
+  text-overflow: ellipsis;
+}
+
+.prob{
+  text-align:right;
+  font-family:'JetBrains Mono', monospace;
+  flex-shrink:0;
+  min-width: 64px;
+}
+.prob-row{
+  display:flex;
+  align-items:baseline;
+  gap: 2px;
+  justify-content:flex-end;
+}
+.prob-input{
+  font-family:'JetBrains Mono', monospace;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: #FFFFFF;
+  background: transparent;
+  border: none;
+  border-bottom: 1px dashed var(--amber-dim);
+  text-align: right;
+  width: 68px;
+  padding: 0 2px 1px;
+}
+.prob-input:focus{
+  outline: none;
+  border-bottom: 1px solid var(--teal);
+}
+.prob-input::-webkit-outer-spin-button,
+.prob-input::-webkit-inner-spin-button{
+  -webkit-appearance: none;
+  margin: 0;
+}
+.prob-pct-sign{
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--teal);
+}
+.prob-label{
+  font-size: 0.56rem;
+  color: var(--muted);
+  letter-spacing: 0.05em;
+}
+
+.controls{
+  display:flex;
+  gap:10px;
+  margin-top: 20px;
+}
+button{
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 700;
+  font-size: 0.9rem;
+  border: none;
+  border-radius: 8px;
+  padding: 14px 0;
+  cursor: pointer;
+  letter-spacing: 0.03em;
+  transition: transform 0.12s ease, filter 0.12s ease, border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+.btn-shuffle{
+  flex: 2;
+  background: var(--amber);
+  color: #1B1200;
+}
+.btn-shuffle:hover{ filter: brightness(1.08); }
+.btn-shuffle:active{ transform: translateY(1px); filter: brightness(0.96); }
+.btn-reset{
+  flex: 1;
+  background: var(--panel-raised);
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+.btn-reset:hover{ color: var(--teal); border-color: var(--teal); }
+.btn-reset:active{ transform: translateY(1px); }
+
+.now-playing{
+  margin-top: 22px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 18px;
+  text-align:center;
+}
+.now-label{
+  font-family:'JetBrains Mono', monospace;
+  font-size: 0.7rem;
+  color: var(--muted);
+  letter-spacing: 0.1em;
+}
+.now-title{
+  font-size: 1.4rem;
+  font-weight: 700;
+  margin-top: 6px;
+  min-height: 1.8em;
+  color: var(--amber);
+}
+.now-title.spinning{
+  color: var(--muted);
+}
+.now-artist{
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.progress-row{
+  display:flex;
+  align-items:center;
+  gap: 10px;
+  margin-top: 16px;
+}
+.progress-time{
+  font-family:'JetBrains Mono', monospace;
+  font-size: 0.68rem;
+  color: var(--muted);
+  width: 34px;
+  flex-shrink:0;
+}
+.progress-time:first-child{ text-align: right; }
+.progress-time:last-child{ text-align: left; }
+.progress-bar{
+  flex: 1;
+  height: 4px;
+  background: var(--panel-raised);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.progress-fill{
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--teal), var(--amber));
+  transition: width 0.4s linear;
+}
+
+/* ===== 使いやすさ改善(スマホ・アプリ向け) ===== */
+body{
+  padding-top: calc(28px + env(safe-area-inset-top));
+  padding-left: calc(16px + env(safe-area-inset-left));
+  padding-right: calc(16px + env(safe-area-inset-right));
+}
+@media (min-width: 900px){
+  body{ padding-top: calc(24px + env(safe-area-inset-top)); }
+}
+
+/* 折りたたみできるパネル(曲を追加・再生連携) */
+details.playback-panel > summary{
+  list-style: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+details.playback-panel > summary::-webkit-details-marker{ display:none; }
+details.playback-panel > summary .chev{
+  font-family:'JetBrains Mono', monospace;
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin-left: 8px;
+  transition: transform 0.15s ease;
+}
+details.playback-panel[open] > summary .chev{ transform: rotate(90deg); }
+details.playback-panel:not([open]) > summary{ margin-bottom: 0; }
+.playback-header .playback-conn{ margin-left: auto; }
+#addPanel .spotify-panel{ margin-bottom: 0; }
+
+.empty-state{
+  font-size: 0.85rem;
+  color: var(--muted);
+  text-align: center;
+  padding: 28px 12px;
+  line-height: 1.7;
+}
+.empty-state strong{ color: var(--text); }
+
+/* 削除の取り消し・エラー表示用のトースト */
+.toast{
+  position: fixed;
+  left: 50%;
+  bottom: calc(24px + env(safe-area-inset-bottom));
+  transform: translate(-50%, 20px);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: calc(100vw - 32px);
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px 10px 16px;
+  font-size: 0.82rem;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.toast.show{ opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+.toast.error{ border-color: #E08A7D; }
+.toast-msg{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.toast button{
+  flex-shrink: 0;
+  background: none;
+  color: var(--amber);
+  padding: 6px 4px;
+  font-size: 0.82rem;
+}
+
+/* スマホ幅: 再生バーを画面下に固定し、リストは二重スクロールさせない */
+@media (max-width: 899px){
+  body{ padding-bottom: calc(170px + env(safe-area-inset-bottom)); }
+  .header{ margin-bottom: calc(12px + env(safe-area-inset-top)); padding-bottom: 12px; }
+  .header p{ font-size: 0.72rem; }
+
+  .sort-bar{
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: var(--bg);
+    padding: calc(6px + env(safe-area-inset-top)) 0 8px;
+    margin-top: calc(-1 * env(safe-area-inset-top));
+    flex-wrap: wrap;
+  }
+  .search-input{ flex: 1 1 100%; }
+  .sort-dropdown{ flex: 1; }
+  .btn-sort-main{ width: 100%; padding: 10px 12px; }
+  .sort-menu{ min-width: 100%; }
+
+  .console{ max-height: none; overflow: visible; padding: 6px 10px; }
+
+  .now-playing{
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    margin: 0;
+    z-index: 20;
+    text-align: left;
+    border-radius: 16px 16px 0 0;
+    border-bottom: none;
+    padding: 12px calc(18px + env(safe-area-inset-right)) calc(74px + env(safe-area-inset-bottom)) calc(18px + env(safe-area-inset-left));
+    box-shadow: 0 -10px 30px rgba(0,0,0,0.6);
+  }
+  .now-label{ display: none; }
+  .now-title{
+    font-size: 1rem;
+    margin-top: 0;
+    min-height: 1.3em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .now-artist{ font-size: 0.75rem; margin-top: 2px; min-height: 1.1em; }
+  .progress-row{ margin-top: 8px; }
+  .controls{
+    position: fixed;
+    left: calc(16px + env(safe-area-inset-left));
+    right: calc(16px + env(safe-area-inset-right));
+    bottom: calc(12px + env(safe-area-inset-bottom));
+    margin: 0;
+    z-index: 21;
+  }
+  .controls button{ padding: 14px 0; font-size: 0.95rem; }
+  .side-col{ margin-top: 14px; }
+  .toast{ bottom: calc(180px + env(safe-area-inset-bottom)); }
+
+  /* iOSは16px未満の入力欄をタップすると画面が勝手にズームするため、16pxにそろえる */
+  .search-input,
+  .spotify-panel textarea,
+  .pb-label input[type=text],
+  .playback-device-row select,
+  .prob-input{ font-size: 16px; }
+}
+
+/* 指で操作する端末: タップしやすい大きさにする */
+@media (pointer: coarse){
+  .drag-handle{ display: none; }   /* iOSではドラッグ&ドロップの並べ替えが動かないため隠す */
+  .channel{ padding: 10px 4px 12px; gap: 8px; }
+  .track-remove{ min-width: 40px; min-height: 40px; font-size: 1.05rem; }
+  input[type=range]{ height: 6px; touch-action: pan-y; }
+  input[type=range]::-webkit-slider-thumb{ width: 26px; height: 26px; border-radius: 7px; margin-top: 0; }
+  .btn-copy{ min-height: 40px; }
+  .provider-tab{ padding: 11px 4px; font-size: 0.76rem; }
+  .pb-toggle{ white-space: normal; padding: 6px 0; }
+  .pb-toggle input{ width: 20px; height: 20px; flex-shrink: 0; }
+  .sort-option, .color-mode-option{ padding: 12px 12px; font-size: 0.85rem; }
+}
+
+/* ===== 再生連携をシンプルに ===== */
+.btn-connect{ width: 100%; align-self: stretch; padding: 14px 18px; font-size: 0.92rem; }
+.btn-spotify{ color: #FFFFFF; }
+.btn-spotify:disabled{ color: rgba(255,255,255,0.7); }
+@media (max-width: 899px){ .prob-input{ width: 86px; } }
+.pb-hint{ margin: 0; font-size: 0.74rem; line-height: 1.6; color: var(--muted); }
+.pb-advanced > summary{
+  cursor: pointer; list-style: none;
+  font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; color: var(--muted);
+  padding: 6px 0;
+}
+.pb-advanced > summary::-webkit-details-marker{ display: none; }
+.pb-advanced > summary::before{ content: '› '; }
+.pb-advanced[open] > summary::before{ content: '⌄ '; }
+.pb-advanced .pb-label{ margin-top: 8px; }
+.playback-device-row{ flex-direction: column; align-items: stretch; }
+.pb-device-label{ width: 100%; }
+.pb-device-label select{ flex: 1; min-width: 0; }
+.btn-link{
+  align-self: flex-start; background: none; border: none; padding: 4px 0;
+  color: var(--muted); font-size: 0.72rem; text-decoration: underline; cursor: pointer;
+}
+.btn-link:hover{ color: var(--amber); }
+/* 下の再生バーと重複していた ⏸ ⏭ ボタンは使わない */
+#playbackTransport{ display: none !important; }
+@media (pointer: coarse){ .btn-link{ padding: 10px 0; } }
+/* ===== ヘッダー・設定画面 ===== */
+.header{ align-items: center; }
+.header-main{ min-width: 0; }
+.playlist-switch{
+  display: inline-flex; align-items: center; gap: 4px; max-width: 100%;
+  background: none; border: none; padding: 2px 0; margin: 0;
+  color: var(--muted); font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; font-weight: 600;
+  letter-spacing: 0; cursor: pointer;
+}
+.playlist-switch #currentPlaylistName{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.playlist-switch:hover{ color: var(--amber); }
+.pl-caret{ font-size: 0.9rem; line-height: 1; }
+.settings-btn{
+  position: relative; flex-shrink: 0;
+  width: 44px; height: 44px; padding: 0; border-radius: 50%;
+  background: var(--panel-raised); border: 1px solid var(--line); color: var(--text);
+  display: grid; place-items: center;
+}
+.settings-btn:hover{ border-color: var(--amber); }
+.settings-avatar{ width: 100%; height: 100%; border-radius: 50%; overflow: hidden; display: none; }
+.settings-avatar img{ width: 100%; height: 100%; object-fit: cover; display: block; }
+.settings-btn.has-avatar .settings-avatar{ display: block; }
+.settings-btn.has-avatar .settings-gear{
+  position: absolute; right: -4px; bottom: -4px; width: 20px; height: 20px; border-radius: 50%;
+  background: var(--panel-raised); border: 1px solid var(--line); display: grid; place-items: center;
+}
+.settings-btn.has-avatar .gear{ width: 13px; height: 13px; }
+.settings-gear{ display: grid; place-items: center; color: var(--muted); }
+.btn-add-songs{ white-space: nowrap; }
+
+html.sheet-open, html.sheet-open body{ overflow: hidden; }
+.sheet[hidden]{ display: none; }
+.sheet{ position: fixed; inset: 0; z-index: 40; }
+.sheet-backdrop{ position: absolute; inset: 0; background: rgba(0,0,0,0.55); animation: fadeIn .15s ease; }
+.sheet-panel{
+  position: absolute; left: 0; right: 0; bottom: 0; top: calc(12px + env(safe-area-inset-top));
+  background: var(--bg); border: 1px solid var(--line); border-bottom: none;
+  border-radius: 16px 16px 0 0; display: flex; flex-direction: column;
+  animation: sheetUp .2s ease;
+}
+@media (min-width: 900px){
+  .sheet-panel{ left: auto; top: 0; width: 460px; border-radius: 0; border-bottom: 1px solid var(--line); animation: sheetIn .2s ease; }
+}
+@keyframes fadeIn{ from{ opacity: 0; } }
+@keyframes sheetUp{ from{ transform: translateY(40px); opacity: 0; } }
+@keyframes sheetIn{ from{ transform: translateX(40px); opacity: 0; } }
+.sheet-head{
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px; border-bottom: 1px solid var(--line); flex-shrink: 0;
+}
+.sheet-head h2{ margin: 0; font-size: 1.1rem; }
+.sheet-done{ background: none; color: var(--amber); padding: 8px 4px; font-size: 0.95rem; }
+.sheet-body{
+  overflow-y: auto; -webkit-overflow-scrolling: touch; flex: 1;
+  padding: 6px 18px calc(28px + env(safe-area-inset-bottom));
+}
+.set-section{ padding: 16px 0; border-bottom: 1px solid var(--line); }
+.set-section:last-child{ border-bottom: none; }
+.set-section h3{
+  margin: 0 0 12px; font-family: 'JetBrains Mono', monospace; font-size: 0.72rem;
+  font-weight: 600; letter-spacing: 0.08em; color: var(--muted);
+}
+.set-about p{ margin: 0; color: var(--muted); font-size: 0.78rem; line-height: 1.6; }
+.sheet .playback-panel{ margin-bottom: 0; }
+.sheet .playback-panel > summary{ display: none; }
+.sheet #addPanel{ padding: 0; border: none; background: none; }
+.sheet .spotify-status{ margin: 8px 0 0; }
+.profile-row{ display: flex; gap: 16px; align-items: center; }
+.profile-avatar{
+  width: 76px; height: 76px; border-radius: 50%; flex-shrink: 0; overflow: hidden;
+  background: var(--panel-raised); border: 1px solid var(--line);
+  display: grid; place-items: center; font-size: 1.9rem; font-weight: 700; color: var(--amber);
+}
+.profile-avatar img{ width: 100%; height: 100%; object-fit: cover; display: block; }
+.profile-fields{ flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.profile-fields input{
+  background: var(--panel-raised); border: 1px solid var(--line); color: var(--text);
+  font-size: 16px; padding: 8px 10px; border-radius: 6px; font-family: 'Space Grotesk', sans-serif;
+}
+.profile-btns{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.btn-file{ display: inline-flex; align-items: center; min-height: 36px; cursor: pointer; }
+.account-box{ display: flex; align-items: center; gap: 12px; }
+.account-box .acc-img{ width: 44px; height: 44px; border-radius: 50%; object-fit: cover; background: var(--panel-raised); flex-shrink: 0; }
+.account-box .acc-meta{ flex: 1; min-width: 0; }
+.account-box .acc-name{ font-weight: 700; font-size: 0.92rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-box .acc-sub{ color: var(--muted); font-size: 0.72rem; margin-top: 2px; }
+.account-box .acc-empty{ color: var(--muted); font-size: 0.8rem; flex: 1; }
+.account-box .btn-copy{ min-height: 38px; }
+.pl-list{ display: flex; flex-direction: column; gap: 6px; }
+.pl-row{
+  display: flex; align-items: center; gap: 8px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 6px 6px 12px;
+}
+.pl-row.current{ border-color: var(--amber); }
+.pl-main{
+  flex: 1; min-width: 0; text-align: left; background: none; color: var(--text);
+  padding: 8px 0; font-size: 0.9rem; font-weight: 700; letter-spacing: 0;
+}
+.pl-main small{ display: block; color: var(--muted); font-weight: 500; font-size: 0.7rem; margin-top: 2px; }
+.pl-main .pl-name{ display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pl-row .pl-badge{ font-size: 0.66rem; color: var(--amber); font-family: 'JetBrains Mono', monospace; flex-shrink: 0; }
+.pl-icon{
+  background: none; color: var(--muted); padding: 0; width: 40px; height: 40px; flex-shrink: 0;
+  border-radius: 6px; font-size: 0.95rem; letter-spacing: 0;
+}
+.pl-icon:hover{ color: var(--text); background: var(--panel-raised); }
+.pl-icon.danger:hover{ color: #E08A7D; }
+.pl-icon.confirm{ color: #E08A7D; width: auto; padding: 0 10px; font-size: 0.75rem; border: 1px solid #E08A7D; }
+.pl-rename{ flex: 1; min-width: 0; background: var(--panel-raised); border: 1px solid var(--teal); color: var(--text); font-size: 16px; padding: 8px 10px; border-radius: 6px; }
+.pl-new{ display: flex; gap: 8px; margin-top: 12px; }
+.pl-new .search-input{ font-size: 16px; }
+.pl-new .btn-spotify{ align-self: stretch; }
+.pl-import{ margin-top: 14px; display: flex; flex-direction: column; gap: 8px; }
+.btn-wide{ width: 100%; min-height: 42px; }
+.pl-row.sp img{ width: 36px; height: 36px; border-radius: 4px; object-fit: cover; flex-shrink: 0; margin-left: -6px; }
+.btn-inline{ align-self: center; margin-top: 12px; }
+@media (max-width: 899px){ .sort-bar .btn-sort-main{ white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-left: 8px; padding-right: 8px; } }
+#spotifyLogoutBtn{ display: none; } /* ログアウトは「アカウント」欄にまとめる */
+@media (max-width: 899px){
+  .btn-add-songs{ flex: 1; padding: 10px 12px; }
+}
+/* ===== アイコン: Google Material Symbols Rounded(Apache License 2.0)。
+   使うアイコンだけを切り出してこのファイルに埋め込んでいるので、通信がなくても表示される。
+   使用中: add e145 / check e5ca / close e14c / delete e872 / drag_indicator e945 / edit e150 /
+   expand_more e5cf / pause e034 / play_arrow e037 / settings e8b8 / skip_next e044 /
+   skip_previous e045 / chevron_right e409 / sort e164 / palette e3b7 / playlist_add e03b */
+@font-face{
+  font-family: 'Skew Icons';
+  font-style: normal;
+  font-weight: 500;
+  font-display: block;
+  src: url(data:font/woff2;base64,d09GMgABAAAAAAfcAA4AAAAAEBQAAAeFAAL5mgAAAAAAAAAAAAAAAAAAAAAAAAAAHCoGYD9TVEFUXgCBJBEICpQYj0YBNgIkAyQLJAAEIAWFCgcgDAcbqAxRlFBSGMAXBzyZ08hDXsISVNwJgd83BCXcxaH2ST48bfP9uwNt4jCaBWfk7GIWLBCzWJ6rCFwlqwCXnRyuaa7lpAjCDIxhCrQ8BmE+NrEtWyBht+kJw5KJJncPQG2JhVRr8BywbrprVNCxdFHvBhQACPjz66rOLJT2H5To0ISW9Wb99u+exEQnpHQRZFK+UC5fSFZbWmNq+jrCyIS9/ryvAwFgDQ4+oNIzczWw71rVuzucwQCA2QwVJQx9kHwlgDuBNaEJxSKcGFdUllqJgw/DX2UwcnMKMBxKAAQA6IPZDwA5/EGo5bOJDHRWOKh//VhPRrldp6QTAsI39hpIKFD9GnS9CQ0aQkjh6U0oYq1Hi6umNnB2SwPEgnxtDVAA6CdQggmD6SjXSzLAw/CHUQ/jHmY80pfLfdTuUe0T01OrZ6efXXjZ82XzqwyzmRWs9P/L647XNa8zXqc8j3ju89ztucxd4/bbNcE1wmmaU6HjPhBsIHbEbIbXlEDCtmTiJXReDv2REAZAQSZCkGwaDGYJtbCAVArBMLQqkFvb2lalpLAsXs5d4i4XuDIC9zkjllIbCdFm15rp8zFy87UxPEbsXtteNnNqTaXcGci69tVFrKB6OSQEdmvdoW9n9DBYDG1tdVkkBHf4+NcQzLJXPZROt5OO3CzWpRhvcXnb6BO0TZjM6r5zNvAKHOowK1tGKURLaCCj/3ZkqRRVo2/kFFNMXDldytt8N3+P7x1nlqeV+o8BAP4gcEWwBIxeycfHT8w9KKEpjOuYDWcmHNMLUmZUcECr0wXB8o5MuO5GghxvHVAyDGCbRI+rTUIVDkfzEDd0UFrw+fbWxgEcbx7sq0/JQf5yot+dkMcaKxOZEK1VGxR14et1zM8D8kk9GI9vWKiFL01S2gE5f4wh636o+5yZ53Zvg1kORFvh3bJn1EI7JROrPssoCH5vfov63ppxj8ln/qn/7Fr7vOLLZlRUHRJBlrIziDOg1+oia+VtA/qsC2lrl61yH8xwcLcDMMHxUvtqT/BKHVloUdy4UYyvSwjbkmuDPCmaTLFYbaKy9EGI3uKsXIWXuwS/l3o6slIGCAit9rMYrWFuqVSGaG3FnIgu82fTvBqA9CNiig4oxzFtYR8+wUou4oXppOgThdD/BwfS3fJ5h/rRKVHxQQZRPs2GzFsQ1ia+YpJ+zo7EJngPt6bPBnMw5OCDQVtrttZNO3UaZpyYUVvernhzVSVkvELDUWCbOD27FjIDu5TVy2Bg9VwTC4rTKMrmUgDmArDK7S9lpf1aj8vTx59op1vv4DVFzbVEy1Y3XauG8JpCylw+tySdDBGRLOLyBRrwwmurxrQ1PjyYN+8sp+fOmkxaXspro3Jrjuu13+pNxgIkTV3aWP8NCx+weu/57HJ2Ldazyy69MZxtBpQ867KBP7Y7lkSyBm8DezYnnFkjq3HrWB27jjOwDat7qQ4lzHrNSOZ5IgfnNnk3WU6hx5BRqc4p9ijudefvtr67fn0pwNatx9gMpzsWiYEz9Iid8GDJgQNnubM3wP2uT4HTp2P69h3ft1/gTFbPNkgv7v36hd2RiP/snUg+s1ks3nT2i20JO6lR0m98P+OHaC6s76YvHig1s5O6d0+arclPmd3YbW5SfofpUd2qk8ape08e0ZBuqRParHEPM4YUjzY1jx6zzzRuiGnxAJU2JzXbf4e/4oq95fxjMkm4TjUsahh/47i1xoT9Mmqhpf0VhVtCdqr/1VQDTIuHjt1nGjPa1Iwom7WsQSo8nJZ3ee5sx9lzYce0w0Kpobj+5DBNsWbPs1v5UVTuW56O1cjWSoWXNP8NlVmOs+bmjvSSULq2WDKso6ZYR5z1meW+jGyQDZHl4rP2xYHGGNusyFfMT5ngMrB5Bqcyoq9xXjHmI29jPBrHXa907x1rmbLDf+6tBaEvQoteHGsfJbQRHllRlUbbim2aXo2NW2GZGtvbXUeXpm6XNbWxMVYqBVIHJRMmD11wiqy0TDlKYXGWne5HhbbaJzE/OU8tFqvz8DKJ1b4FFT9sddm23ZL6qg6aJJVKIlapRZdo0dWHBqHK2Pbte98MsXAau4XsSa0SS1Qq7TjzC6p9HyHx0ebY6fDHExkOclrq19snnCuvEMV/s6TogwDw/NVjGtt+v/QZbZPpAX12QlBADgH+UoKDYwiVPRQS63OexBQiITn4o1FPq3AQV9CobaJxDudwH/kIAAk2wGLk3sN+9tgEGoSxAlAJbSeCEFQixRNOd6LRwWInBsk+OgngSkIchYgn2a0IYEnGihOBNZnqRMGZzHeiYUu2sBbCvay18OT1bWBJriINr9EAPXXSQKc3OUIRglBEFlQykO8jXdVhrrZLEwQ5SdEVcHwHX9rLgnW4sk5PfQvW8jPzVPXTumfQKq/1Ohqgm2q8rrU5r4/uakUxCjbYMruqihgaPj8GUYhAHJTU1JTixu1ZeiujBMrgzmk0eaVaf+xVCa+7dpZDNzPM9GO7ojLQKl6lWqPeZ3xNhTYO7MsvUPdRp3njQWjcRzcqvD/t5pEdivBzBg0VGUHTZmIes4WZAgA=) format('woff2');
+}
+.ic{
+  font-family: 'Skew Icons';
+  font-weight: normal; font-style: normal; font-size: 1.25em; line-height: 1;
+  display: inline-block; vertical-align: -0.22em; letter-spacing: 0;
+  -webkit-font-smoothing: antialiased; user-select: none;
+}
+.controls button{ display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
+.controls .btn-shuffle .ic{ font-size: 1.45em; }
+.btn-add-songs .ic, .btn-inline .ic{ font-size: 1.2em; margin-right: 2px; }
+.pl-caret .ic{ font-size: 1.15rem; vertical-align: -0.25em; }
+.settings-gear .ic{ font-size: 22px; }
+.settings-btn.has-avatar .settings-gear .ic{ font-size: 13px; }
+.track-remove .ic{ font-size: 1.15rem; }
+.drag-handle .ic{ font-size: 1.1rem; }
+.pl-icon .ic{ font-size: 1.25rem; }
+.pb-advanced > summary::before, .pb-advanced[open] > summary::before{
+  content: '\e409'; font-family: 'Skew Icons'; display: inline-block; font-size: 1.1em;
+  vertical-align: -0.2em; margin-right: 2px; transition: transform .15s ease;
+}
+.pb-advanced[open] > summary::before{ transform: rotate(90deg); }
+/* 曲が流れていないときは曲名欄を出さない */
+.now-title:empty{ display: none; }
+@media (max-width: 899px){ .now-title:empty + .now-artist:empty{ display: none; } .now-title:empty ~ .progress-row{ margin-top: 4px; } }
+@media (min-width: 900px){ .now-title:empty{ display: block; } }
+/* ===== アイコンだけのボタン ===== */
+.btn-icon{
+  width: 44px; height: 40px; padding: 0; flex: 0 0 44px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.btn-icon .ic{ font-size: 22px; vertical-align: 0; }
+.btn-icon.is-set{ color: var(--amber); border-color: var(--amber-dim); }
+.sort-bar{ flex-wrap: nowrap; }
+.sort-bar .search-input{ flex: 1 1 auto; }
+.sort-bar .sort-menu{ left: auto; right: 0; min-width: 190px; }
+.menu-title{
+  font-family: 'JetBrains Mono', monospace; font-size: 0.66rem; letter-spacing: 0.08em;
+  color: var(--muted); padding: 6px 10px 4px;
+}
+@media (max-width: 899px){
+  .sort-bar .search-input{ flex: 1 1 auto; }
+  .sort-bar .btn-sort-main.btn-icon{ width: 44px; flex: 0 0 44px; padding: 0; height: 44px; }
+  .sort-dropdown{ flex: 0 0 auto; }
+}
+/* 再生バー: 丸いアイコンボタン */
+.controls{ justify-content: center; align-items: center; gap: 20px; }
+.controls .btn-round{
+  flex: 0 0 auto; border-radius: 50%; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.controls .btn-reset.btn-round{ width: 52px; height: 52px; }
+.controls .btn-reset.btn-round .ic{ font-size: 28px; }
+.controls .btn-shuffle.btn-round{ width: 64px; height: 64px; }
+.controls .btn-shuffle.btn-round .ic{ font-size: 36px; }
+@media (max-width: 899px){
+  .now-playing{ padding-bottom: calc(92px + env(safe-area-inset-bottom)); }
+  .controls{ bottom: calc(14px + env(safe-area-inset-bottom)); }
+  .controls button{ padding: 0; }
+}
+#playlistSheet .set-section{ border-bottom: none; padding-top: 10px; }
+#playlistSheet .set-section > h3{ display: none; }
+
+/* 曲名などをドラッグしてもテキスト選択・右クリックメニューが出ないようにする(入力欄は除く) */
+body, body *{ -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+input, textarea, select{ -webkit-user-select: text; user-select: text; }
+
+/* ===== 曲の右クリック/二本指クリック/長押しメニュー ===== */
+.ctx-menu{
+  position: fixed; z-index: 100; min-width: 250px; max-width: calc(100vw - 16px);
+  padding: 6px; border-radius: 10px;
+  background: rgba(36,36,36,0.96); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
+  border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 12px 36px rgba(0,0,0,0.6);
+  font-size: 0.9rem; color: #f2f2f2;
+}
+.ctx-item{
+  position: relative; display: flex; align-items: center; gap: 12px;
+  padding: 11px 12px; border-radius: 6px; cursor: pointer; white-space: nowrap;
+}
+.ctx-item:hover, .ctx-item.open{ background: rgba(255,255,255,0.1); }
+.ctx-item.disabled{ opacity: 0.45; pointer-events: none; }
+.ctx-item .ctx-ic{ width: 20px; text-align: center; opacity: 0.85; }
+.ctx-item .ctx-arrow{ margin-left: auto; opacity: 0.7; }
+.ctx-sub{
+  position: fixed; z-index: 101; min-width: 220px; max-height: 60vh; overflow-y: auto;
+  padding: 6px; border-radius: 10px;
+  background: rgba(36,36,36,0.97); border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 12px 36px rgba(0,0,0,0.6);
+}
+.ctx-sep{ height: 1px; margin: 4px 6px; background: rgba(255,255,255,0.1); }
+
+/* ===== 上部(タイトル・プレイリスト切替・設定・検索・並び替え・配色)を固定: ページ自体はスクロールさせず、曲リストだけをスクロールさせる ===== */
+@media (max-width: 899px){
+  html, body{ height: 100%; overflow: hidden; }
+  body{
+    box-sizing: border-box;
+    height: 100vh; height: 100dvh;
+    padding-bottom: 0 !important;
+    min-height: 0;
+  }
+  .wrap{ height: 100%; display: flex; flex-direction: column; padding-top: 0; }
+  .header{ flex: 0 0 auto; position: static !important; transform: none; margin-bottom: 0 !important; }
+  .layout{ display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+  .main-col{ display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+  .sort-bar{ position: static !important; flex: 0 0 auto; margin: 0 !important; padding: 12px 0 10px; background: var(--bg); }
+  .console{
+    flex: 1 1 auto; min-height: 0;
+    max-height: none !important; overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+    padding-bottom: calc(170px + env(safe-area-inset-bottom));
+  }
+  .side-col{ flex: 0 0 auto; }
+}
+
+/* 楽曲の行から「出現率」の文字と×ボタンを消す(削除は右クリックメニューから) */
+.channel .prob-label, .channel .track-remove{ display: none !important; }
+
+/* ===== 再生バーをドラッグ/クリックして再生位置を変える ===== */
+.progress-bar{ position: relative; overflow: visible; cursor: pointer; touch-action: none; }
+.progress-bar::before{ content: ''; position: absolute; left: 0; right: 0; top: -12px; bottom: -12px; }
+.progress-fill{ position: relative; border-radius: 2px; }
+.progress-fill::after{
+  content: ''; position: absolute; right: -7px; top: 50%;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--amber); box-shadow: 0 0 0 3px rgba(0,0,0,0.35);
+  transform: translateY(-50%) scale(0); transition: transform 0.15s ease;
+}
+.progress-bar:hover .progress-fill::after,
+.progress-bar.seeking .progress-fill::after{ transform: translateY(-50%) scale(1); }
+.progress-bar.seeking .progress-fill{ transition: none; }
+.progress-bar:hover{ height: 6px; }
+@media (pointer: coarse){ .progress-fill::after{ transform: translateY(-50%) scale(0.85); } }
+
+/* 再生中の曲の表示をクリックすると、リストのその曲へ移動する */
+.now-playing{ cursor: pointer; }
+.now-playing .progress-row{ cursor: default; }
+.now-playing:hover .now-title{ text-decoration: underline; text-underline-offset: 3px; }
+@keyframes skewJumpFlash{
+  0%, 60%{ box-shadow: inset 0 0 0 2px var(--amber), 0 0 18px rgba(255,57,114,0.45); }
+  100%{ box-shadow: inset 0 0 0 0 transparent; }
+}
+.channel.jump-flash{ animation: skewJumpFlash 1.6s ease-out; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="header">
+    <div class="header-main">
+      <h1>SKEW</h1>
+      <button class="playlist-switch" id="playlistSwitchBtn" type="button" title="プレイリストを切り替える">
+        <span id="currentPlaylistName">マイプレイリスト</span><span class="pl-caret"><span class="ic" aria-hidden="true">&#xe5cf;</span></span>
+      </button>
+    </div>
+    <button class="settings-btn" id="settingsBtn" type="button" aria-label="設定">
+      <span class="settings-avatar" id="headerAvatar"></span>
+      <span class="settings-gear"><span class="ic" aria-hidden="true">&#xe8b8;</span></span>
+    </button>
+  </div>
+
+  <div class="layout">
+    <div class="main-col">
+      <div class="sort-bar">
+        <input type="text" id="searchInput" class="search-input" placeholder="曲・アーティストを検索">
+        <div class="sort-dropdown">
+          <button class="btn-sort-main btn-icon" id="sortMainBtn" type="button" title="並び替え" aria-label="並び替え"><span class="ic" aria-hidden="true">&#xe164;</span></button>
+          <div class="sort-menu" id="sortMenu">
+            <div class="menu-title">並び替え</div>
+            <button class="sort-option" data-sort="title">タイトル名</button>
+            <button class="sort-option" data-sort="artist">アーティスト名</button>
+            <button class="sort-option" data-sort="recent">最近追加した順</button>
+            <button class="sort-option" data-sort="pct-desc">出現率の高い順</button>
+          </div>
+        </div>
+        <div class="sort-dropdown">
+          <button class="btn-sort-main btn-icon" id="colorModeBtn" type="button" title="配色" aria-label="配色"><span class="ic" aria-hidden="true">&#xe3b7;</span></button>
+          <div class="sort-menu" id="colorModeMenu">
+            <div class="menu-title">配色</div>
+            <button class="color-mode-option" data-color-mode="average">平均基準</button>
+            <button class="color-mode-option" data-color-mode="log">対数スケール</button>
+            <button class="color-mode-option" data-color-mode="relative">リスト内相対</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="console" id="console"></div>
+    </div>
+
+    <div class="side-col">
+      <div class="now-playing">
+        <div class="now-label">NOW PLAYING</div>
+        <div class="now-title" id="nowTitle"></div>
+        <div class="now-artist" id="nowArtist"></div>
+        <div class="progress-row">
+          <span class="progress-time" id="progressElapsed">0:00</span>
+          <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+          <span class="progress-time" id="progressTotal">0:00</span>
+        </div>
+      </div>
+
+      <div class="controls">
+        <button class="btn-reset btn-round" id="backBtn" title="前の曲" aria-label="前の曲"><span class="ic" aria-hidden="true">&#xe045;</span></button>
+        <button class="btn-shuffle btn-round" id="playStopBtn" title="再生" aria-label="再生"><span class="ic" aria-hidden="true">&#xe037;</span></button>
+        <button class="btn-reset btn-round" id="skipBtn" title="次の曲" aria-label="次の曲"><span class="ic" aria-hidden="true">&#xe044;</span></button>
+      </div>
+
+      <details class="playback-panel" id="addPanel" open>
+      <summary class="playback-header">
+        <span class="playback-title">曲を追加</span>
+        <span class="chev">›</span>
+      </summary>
+      <div class="spotify-panel">
+        <textarea id="spotifyPaste" rows="4" placeholder="Spotifyでプレイリストを開き、曲を全選択(Ctrl/Cmd+A)してコピー(Ctrl/Cmd+C)し、ここに貼り付け(曲名やリンクどちらの形式でもOK)"></textarea>
+        <div class="spotify-panel-btns">
+          <button class="btn-spotify" id="spotifyAppendBtn">曲リストに追加する</button>
+        </div>
+      </div>
+      </details>
+      <div class="spotify-status" id="spotifyStatus"></div>
+
+      <details class="playback-panel" id="playbackPanel" open>
+        <summary class="playback-header">
+          <span class="playback-title">再生連携</span>
+          <span class="playback-conn" id="playbackConn">未接続</span>
+          <span class="chev">›</span>
+        </summary>
+
+        <div class="provider-tabs">
+          <button class="provider-tab active" data-provider="spotify">Spotify</button>
+          <button class="provider-tab" data-provider="youtube">YouTube Music</button>
+          <button class="provider-tab" data-provider="apple">Apple Music</button>
+        </div>
+
+        <div class="provider-panel" id="providerPanelSpotify">
+          <div class="playback-setup" id="playbackSetup">
+            <button class="btn-spotify btn-connect" id="spotifyLoginBtn">Spotifyでログイン</button>
+            <p class="pb-hint">ログインするだけで使えます。曲はスマホやPCのSpotifyアプリから流れます(Spotify Premiumが必要です)。</p>
+            <details class="pb-advanced">
+              <summary>詳細設定(開発者向け)</summary>
+              <label class="pb-label">Client ID(空欄なら標準のものを使います)
+                <input type="text" id="spotifyClientId" placeholder="標準のClient IDを使用中" autocomplete="off" autocapitalize="off">
+              </label>
+              <label class="pb-label">Redirect URI(自分のClient IDを使う場合のみ登録)
+                <div class="pb-redirect-row">
+                  <input type="text" id="spotifyRedirectUri" readonly>
+                  <button class="btn-copy" id="copyRedirectBtn">コピー</button>
+                </div>
+              </label>
+            </details>
+          </div>
+
+          <div class="playback-device-row" id="playbackDeviceRow" style="display:none;">
+            <label class="pb-label pb-device-label">再生する端末
+              <div class="pb-redirect-row">
+                <select id="deviceSelect"></select>
+                <button class="btn-copy" id="refreshDevicesBtn">更新</button>
+                <button class="btn-copy" id="diagBtn" type="button">診断</button>
+              </div>
+            </label>
+            <button class="btn-link" id="spotifyLogoutBtn" type="button">ログアウト</button>
+          </div>
+        </div>
+
+        <div class="provider-panel" id="providerPanelYoutube" style="display:none;">
+          <div class="playback-setup">
+            <button class="btn-spotify btn-connect" id="youtubeConnectBtn">YouTube Musicを使う</button>
+            <p class="pb-hint">この画面の中で再生します。曲を探すのにYouTube Data APIキーが必要です(一度入れれば保存されます)。</p>
+            <details class="pb-advanced" id="youtubeAdvanced">
+              <summary>APIキーの設定</summary>
+              <label class="pb-label">YouTube Data API キー
+                <input type="text" id="youtubeApiKey" placeholder="Google Cloud ConsoleのAPIキー" autocomplete="off" autocapitalize="off">
+              </label>
+            </details>
+          </div>
+          <div id="ytPlayerContainer" class="yt-player"></div>
+        </div>
+
+        <div class="provider-panel" id="providerPanelApple" style="display:none;">
+          <div class="playback-setup">
+            <button class="btn-spotify btn-connect" id="appleLoginBtn">Apple Musicでログイン</button>
+            <p class="pb-hint">Apple Musicの登録が必要です。開発者トークンが必要です(一度入れれば保存されます)。</p>
+            <details class="pb-advanced" id="appleAdvanced">
+              <summary>開発者トークンの設定</summary>
+              <label class="pb-label">開発者トークン(Developer Token)
+                <input type="text" id="appleDevToken" placeholder="generate-apple-music-token.jsで作ったJWT" autocomplete="off" autocapitalize="off">
+              </label>
+            </details>
+          </div>
+        </div>
+
+        <label class="pb-toggle" id="autoPlayRow">
+          <input type="checkbox" id="autoPlayToggle">
+          曲が終わったら自動で次の曲へ(出現率に従う)
+        </label>
+
+        <div class="playback-transport" id="playbackTransport" style="display:none;">
+          <button class="btn-transport" id="playPauseBtn" title="再生/一時停止">⏸</button>
+          <button class="btn-transport" id="skipNextBtn" title="次へ(重みに従って選曲)">⏭</button>
+        </div>
+      </details>
+    </div>
+  </div>
+
+</div>
+
+<div class="sheet" id="settingsSheet" hidden>
+  <div class="sheet-backdrop" data-close-settings></div>
+  <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <div class="sheet-head">
+      <h2 id="settingsTitle">設定</h2>
+      <button class="sheet-done" type="button" data-close-settings>完了</button>
+    </div>
+    <div class="sheet-body" id="settingsBody">
+      <section class="set-section" id="secProfile">
+        <h3>アイコン</h3>
+        <div class="profile-row">
+          <div class="profile-avatar" id="profileAvatar"></div>
+          <div class="profile-fields">
+            <label class="pb-label">表示名
+              <input type="text" id="profileName" placeholder="名前" maxlength="24" autocomplete="off">
+            </label>
+            <div class="profile-btns">
+              <label class="btn-copy btn-file">画像を選ぶ<input type="file" id="avatarFile" accept="image/*" hidden></label>
+              <button class="btn-copy" id="avatarSpotifyBtn" type="button" hidden>Spotifyの画像を使う</button>
+              <button class="btn-link" id="avatarRemoveBtn" type="button">リセット</button>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section class="set-section" id="secAccount">
+        <h3>アカウント</h3>
+        <div id="accountBox" class="account-box"></div>
+      </section>
+      <section class="set-section" id="secPlayback">
+        <h3>再生連携</h3>
+        <div id="playbackMount"></div>
+      </section>
+      <section class="set-section" id="secPlaylists">
+        <h3>プレイリスト</h3>
+        <div class="pl-list" id="playlistList"></div>
+        <div class="pl-new">
+          <input type="text" id="newPlaylistName" class="search-input" placeholder="新しいプレイリスト名" maxlength="40" autocomplete="off">
+          <button class="btn-spotify" id="newPlaylistBtn" type="button">作成</button>
+        </div>
+        <div class="pl-import" id="spotifyImportBox">
+          <button class="btn-copy btn-wide" id="loadSpotifyPlaylistsBtn" type="button">Spotifyのプレイリストを読み込む</button>
+          <div class="pl-list" id="spotifyPlaylistList"></div>
+        </div>
+      </section>
+      <section class="set-section" id="secAdd">
+        <h3>「<span id="addTargetName"></span>」に曲を追加</h3>
+        <div id="addMount"></div>
+      </section>
+      <section class="set-section set-about">
+        <h3>このアプリについて</h3>
+        <p>Skew 1.1 — 曲ごとの「流れやすさ」を自由に調整できるシャッフルプレーヤー</p>
+      </section>
+    </div>
+  </div>
+</div>
+
+<div class="sheet" id="playlistSheet" hidden>
+  <div class="sheet-backdrop" data-close-settings></div>
+  <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="playlistSheetTitle">
+    <div class="sheet-head">
+      <h2 id="playlistSheetTitle">プレイリスト</h2>
+      <button class="sheet-done" type="button" data-close-settings>完了</button>
+    </div>
+    <div class="sheet-body" id="playlistBody"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite">
+  <span class="toast-msg" id="toastMsg"></span>
+  <button id="toastUndo" type="button">元に戻す</button>
+</div>
+
+<script>
+// --- Spotify OAuth (Authorization Code + PKCE) のコールバック自己検出 ---
+// このHTMLファイル自体をSpotifyのRedirect URIとして使う。
+// ポップアップでSpotify認証後にこのページへ戻ってくると、URLのクエリに
+// codeが含まれているので、それを検出したらトークンに交換して親ウィンドウに送る。
+// (以前使っていたImplicit Grant(response_type=token)はSpotify側で廃止されたため、
+//  PKCE対応のAuthorization Codeフローに変更した。)
+(function(){
+  const params = new URLSearchParams(location.search);
+  const code = params.get('code');
+  const returnedState = params.get('state');
+  const authError = params.get('error');
+
+  if(window.opener && authError){
+    window.opener.postMessage({ type: 'spotify-token-error', message: authError }, '*');
+    document.body.innerHTML = '<p style="font-family:sans-serif;padding:20px;color:#555;">Spotifyでの認証がキャンセルまたは拒否されました。このウィンドウは閉じて構いません。</p>';
+    return;
+  }
+
+  // ポップアップではなく、このタブのままログインして戻ってきた場合(後で処理する)
+  if(!window.opener && code){
+    window.__skewPendingSpotifyCode = { code, state: returnedState };
+  }
+
+  if(window.opener && code){
+    // stateパラメータに "code_verifier::client_id" の形で載せて往復させている
+    // (ストレージを使わずにポップアップの再読み込みをまたいで値を引き継ぐため)。
+    (async () => {
+      try{
+        const redirectUri = location.href.split('#')[0].split('?')[0].replace(/index\.html$/, '');
+        const verifier = returnedState ? returnedState.split('::')[0] : null;
+        const storedClientId = returnedState ? returnedState.split('::')[1] : null;
+        const token = await exchangeCodeForToken(code, verifier, storedClientId, redirectUri);
+        window.opener.postMessage({ type: 'spotify-token', token }, '*');
+        document.body.innerHTML = '<p style="font-family:sans-serif;padding:20px;color:#555;">Spotify連携が完了しました。このウィンドウは閉じて構いません。</p>';
+      } catch(err){
+        window.opener.postMessage({ type: 'spotify-token-error', message: err.message }, '*');
+        document.body.innerHTML = '<p style="font-family:sans-serif;padding:20px;color:#c0392b;">Spotify連携でエラーが発生しました: ' + err.message + '</p>';
+      } finally {
+        setTimeout(() => window.close(), 1500);
+      }
+    })();
+  }
+})();
+
+// アプリに組み込む標準のSpotify Client ID。
+// PKCE方式ではClient Secretを使わないため、Client IDをアプリに含めても安全。
+// このClient IDのSpotifyアプリ設定には、Redirect URIとして skew://callback(アプリ版)と
+// ブラウザ版のURLを登録しておく必要がある。
+const DEFAULT_SPOTIFY_CLIENT_ID = 'f6c3476c16ce40bebb636e0873ddd9d5';
+const SPOTIFY_AUTH_KEY = 'skew.spotify.auth.v1';
+
+function loadSpotifyAuth(){
+  try{ return JSON.parse(localStorage.getItem(SPOTIFY_AUTH_KEY) || 'null'); } catch(e){ return null; }
+}
+function saveSpotifyAuth(auth){
+  try{
+    if(auth) localStorage.setItem(SPOTIFY_AUTH_KEY, JSON.stringify(auth));
+    else localStorage.removeItem(SPOTIFY_AUTH_KEY);
+  } catch(e){ /* 保存できない環境では毎回ログインになる */ }
+}
+
+// 認可コード(code)を実際のアクセストークンに交換する(PKCE)。
+// ブラウザのポップアップ経由・ネイティブアプリのカスタムURLスキーム経由の両方から使う共通処理。
+async function exchangeCodeForToken(code, verifier, clientId, redirectUri){
+  const body = new URLSearchParams();
+  body.set('grant_type', 'authorization_code');
+  body.set('code', code);
+  body.set('redirect_uri', redirectUri);
+  body.set('client_id', clientId || '');
+  body.set('code_verifier', verifier || '');
+
+  const res = await fetch('https://accounts.spotify.com/api/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString()
+  });
+  const data = await res.json();
+  if(!res.ok || !data.access_token){
+    throw new Error(data.error_description || data.error || 'トークン取得に失敗しました');
+  }
+  // 次回からログインし直さずに済むよう、更新用トークンを端末に保存しておく
+  if(data.refresh_token){
+    saveSpotifyAuth({ refreshToken: data.refresh_token, clientId: clientId || DEFAULT_SPOTIFY_CLIENT_ID, scope: data.scope || '' });
+  }
+  return data.access_token;
+}
+
+// 保存してある更新用トークンから、新しいアクセストークンを取得する
+async function refreshSpotifyAccessToken(){
+  const auth = loadSpotifyAuth();
+  if(!auth || !auth.refreshToken) return null;
+  const body = new URLSearchParams();
+  body.set('grant_type', 'refresh_token');
+  body.set('refresh_token', auth.refreshToken);
+  body.set('client_id', auth.clientId || DEFAULT_SPOTIFY_CLIENT_ID);
+  const res = await fetch('https://accounts.spotify.com/api/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString()
+  });
+  const data = await res.json().catch(() => ({}));
+  if(!res.ok || !data.access_token){
+    if(res.status === 400) saveSpotifyAuth(null); // 取り消された等。次回は普通にログインしてもらう
+    return null;
+  }
+  if(data.refresh_token){
+    saveSpotifyAuth({ refreshToken: data.refresh_token, clientId: auth.clientId || DEFAULT_SPOTIFY_CLIENT_ID, scope: data.scope || auth.scope || '' });
+  }
+  return data.access_token;
+}
+
+let tracks = [];
+
+// --- 曲リストと設定を端末に保存する(アプリを閉じても消えないように) ---
+const STORAGE_KEY = 'skew.state.v1';
+let savedState = null;
+try{ savedState = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); } catch(e){ savedState = null; }
+if(savedState && Array.isArray(savedState.tracks)){
+  tracks = savedState.tracks.filter(t => t && typeof t.id === 'number' && typeof t.title === 'string');
+}
+// --- 複数プレイリスト ---
+// 画面で編集中の曲リストは従来どおり tracks に入れ、保存や切り替えのときに playlists へ書き戻す。
+let playlists = [];
+let currentPlaylistId = null;
+function isValidTrack(t){ return t && typeof t.id === 'number' && typeof t.title === 'string'; }
+if(savedState && Array.isArray(savedState.playlists) && savedState.playlists.length > 0){
+  playlists = savedState.playlists.filter(pl => pl && pl.id && Array.isArray(pl.tracks));
+}
+if(playlists.length === 0){
+  playlists = [{ id: 'pl' + Date.now(), name: 'マイプレイリスト', tracks: tracks }];
+}
+currentPlaylistId = (savedState && playlists.some(pl => pl.id === savedState.currentPlaylistId))
+  ? savedState.currentPlaylistId : playlists[0].id;
+tracks = (playlists.find(pl => pl.id === currentPlaylistId).tracks || []).filter(isValidTrack);
+function currentPlaylist(){ return playlists.find(pl => pl.id === currentPlaylistId); }
+function syncCurrentPlaylist(){ const pl = currentPlaylist(); if(pl) pl.tracks = tracks; }
+
+let saveTimer = null;
+function saveState(){
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    try{
+      const g = (id) => { const el = document.getElementById(id); return el ? el.value : ''; };
+      syncCurrentPlaylist();
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        playlists,
+        currentPlaylistId,
+        trackAddCounter,
+        colorMode,
+        spotifyClientId: g('spotifyClientId'),
+        youtubeApiKey: g('youtubeApiKey'),
+        appleDevToken: g('appleDevToken'),
+        activeProvider: (typeof activeProvider !== 'undefined') ? activeProvider : 'spotify'
+      
+      }));
+    } catch(e){ /* 保存できない環境では何もしない */ }
+  }, 300);
+}
+
+// 曲の「追加順」を管理する連番。曲を新規作成するたびにこれを進めて割り当てる。
+let trackAddCounter = tracks.length;
+function nextAddedAt(){
+  trackAddCounter += 1;
+  return trackAddCounter;
+}
+if(savedState && Number.isFinite(savedState.trackAddCounter)){
+  trackAddCounter = Math.max(trackAddCounter, savedState.trackAddCounter);
+}
+
+const consoleEl = document.getElementById('console');
+const nowTitleEl = document.getElementById('nowTitle');
+const nowArtistEl = document.getElementById('nowArtist');
+const progressFillEl = document.getElementById('progressFill');
+const progressElapsedEl = document.getElementById('progressElapsed');
+const progressTotalEl = document.getElementById('progressTotal');
+let spinTimer = null;
+
+// 曲名・アーティスト名での検索
+let searchQuery = '';
+const searchInputEl = document.getElementById('searchInput');
+searchInputEl.addEventListener('input', () => {
+  searchQuery = searchInputEl.value.trim();
+  render();
+});
+
+// ミリ秒を "分:秒"(例: 3:07)の表示形式に整形する
+function formatMs(ms){
+  if(!ms || ms < 0) ms = 0;
+  const totalSec = Math.floor(ms / 1000);
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return `${min}:${String(sec).padStart(2, '0')}`;
+}
+
+// 指数的重み付け: フェーダー値(1-100)の差を強調するため累乗で変換する。
+// EXP_FACTOR を大きくするほど、高い重みの曲がより優先されやすくなる。
+const EXP_FACTOR = 2.4;
+
+function effectiveWeight(w){
+  if(!Number.isFinite(w) || w < 0) return 0; // 不正な重みは常に0として扱う(NaNの伝播を止める)
+  return Math.pow(w, EXP_FACTOR);
+}
+
+// フェーダーの「見た目上の位置」(0〜100、線形)と「実際の出現率(%)」を対数カーブで相互変換する。
+// 曲数が多いとほとんどの曲の出現率が0%付近に集中し、単純な線形フェーダーだと
+// スライダーの半分以上が実質的に使われなくなってしまう。低い出現率の付近に
+// より広いスライダー範囲を割り当てることで、フェーダー全体を有効に使えるようにする。
+// 曲数が多いほど、この「低い側を広げる」効果を強めていく。
+// カーブの強さ(decades)を、平均出現率(100/曲数)がスライダーのちょうど真ん中(位置50)に
+// 来るように逆算する。sliderPos(avgPct) = 50 という条件を解くと decades = 2*log10(N-1) になる。
+function getSliderLogDecades(){
+  const n = Math.max(tracks.length, 1);
+  const raw = 2 * Math.log10(Math.max(n - 1, 1));
+  return Math.max(0.5, Math.min(24, raw));
+}
+
+function sliderPosToPct(pos){
+  const s = Math.max(0, Math.min(100, pos));
+  if(s <= 0) return 0;
+  const decades = getSliderLogDecades();
+  const factor = Math.pow(10, decades) - 1;
+  return (100 / factor) * (Math.pow(10, decades * s / 100) - 1);
+}
+
+function pctToSliderPos(pct){
+  const p = Math.max(0, Math.min(100, pct));
+  if(p <= 0) return 0;
+  const decades = getSliderLogDecades();
+  const factor = Math.pow(10, decades) - 1;
+  return (100 / decades) * Math.log10((p * factor) / 100 + 1);
+}
+
+function totalEffectiveWeight(){
+  return tracks.reduce((s,t)=>s+effectiveWeight(t.weight),0);
+}
+
+// 出現率の小数桁数を楽曲数に応じて決める。
+// 楽曲数が多いほど1曲あたりの平均出現率(100/N%)が小さくなるため、
+// それが0.00%に丸め込まれて見えなくならないよう桁数を増やす。
+// 1〜9,999曲: 小数第2位まで / 10,000〜99,999曲: 小数第2位まで
+// 100,000〜999,999曲: 小数第3位まで / それ以上はさらに1桁ずつ増える。
+function getPctDecimals(){
+  const n = Math.max(tracks.length, 1);
+  if(n < 1000) return 3;      // 1000曲未満は小数第3位まで
+  if(n < 100000) return 4;    // 1000〜99999曲は小数第4位まで
+  // 100000曲以降は、10倍になるごとにさらに1桁ずつ増えていく
+  return 4 + (Math.floor(Math.log10(n)) - 4);
+}
+
+function formatPct(weight, total){
+  const decimals = getPctDecimals();
+  return total > 0 ? (effectiveWeight(weight)/total*100).toFixed(decimals) : (0).toFixed(decimals);
+}
+
+// 出現率(数値)を、現在のリスト内での相対位置に応じて
+// #2E112D → #540032 → #820333 → #C9283E → #F0433A の5色グラデーションに変換する
+const PCT_COLOR_STOPS = [
+  [0x07, 0x3B, 0x4C], // #073B4C
+  [0xFF, 0x39, 0x72], // #FF3972
+];
+
+function getPctRange(){
+  const total = totalEffectiveWeight();
+  const values = tracks.map(t => total > 0 ? (effectiveWeight(t.weight) / total * 100) : 0);
+  return { min: Math.min(...values), max: Math.max(...values) };
+}
+
+// tを 0〜1 の範囲で受け取り、PCT_COLOR_STOPSの該当する2色の間を線形補間する
+// 配色モード: 曲数が増えると出現率(絶対値)がどんどん小さくなり、絶対値基準の色分けだと
+// ほとんどの曲が低い方の色に集まって見分けにくくなる。複数の基準を切り替えられるようにする。
+// - 'average'  : 平均出現率(100÷曲数)を基準に、平均より高いか低いかで色を決める
+// - 'log'      : 対数スケールにして、小さい値同士の差も見えやすくする
+// - 'relative' : 現在のリスト内の最小〜最大を基準にする(1曲突出すると他が同化する可能性あり)
+let colorMode = 'average';
+
+function pctToColor(pctNum){
+  // 配色モード(平均基準など)によっては、計算上0%や100%でもぴったり端の色にならないことがある。
+  // 「0%は必ず#073B4C、100%は必ず#EF476F」を保証するため、ここで明示的に処理する。
+  if(pctNum <= 0){
+    return `rgb(${PCT_COLOR_STOPS[0][0]}, ${PCT_COLOR_STOPS[0][1]}, ${PCT_COLOR_STOPS[0][2]})`;
+  }
+  if(pctNum >= 100){
+    const last = PCT_COLOR_STOPS[PCT_COLOR_STOPS.length - 1];
+    return `rgb(${last[0]}, ${last[1]}, ${last[2]})`;
+  }
+
+  const n = Math.max(tracks.length, 1);
+  let baseT;
+
+  if(colorMode === 'average'){
+    // 平均(100/n)を基準に、比率をなだらかに0〜1へ写像する(平均でちょうど0.5になる)
+    const avgPct = 100 / n;
+    const ratio = pctNum / (avgPct || 1);
+    baseT = ratio / (ratio + 1);
+  } else if(colorMode === 'log'){
+    // 対数スケール: 0%付近の小さな差も対数的に引き伸ばして見えやすくする
+    const floor = 0.01; // log(0)を避けるための下限
+    const val = Math.max(pctNum, floor);
+    const minLog = Math.log10(floor);
+    const maxLog = Math.log10(100);
+    baseT = (Math.log10(val) - minLog) / (maxLog - minLog);
+  } else {
+    // リスト内の実際の最小〜最大を基準にした相対評価
+    const { min, max } = getPctRange();
+    baseT = max > min ? (pctNum - min) / (max - min) : 0.5;
+  }
+
+  // どのモードでも、低い側の諧調をさらに広げるためガンマ補正をかける
+  const GAMMA = 0.5;
+  const t = Math.max(0, Math.min(1, Math.pow(Math.max(0, baseT), GAMMA)));
+
+  const segments = PCT_COLOR_STOPS.length - 1;
+  const scaled = t * segments;
+  const idx = Math.max(0, Math.min(Math.floor(scaled), segments - 1));
+  const localT = scaled - idx;
+
+  const from = PCT_COLOR_STOPS[idx];
+  const to = PCT_COLOR_STOPS[idx + 1];
+  const r = Math.round(from[0] + (to[0] - from[0]) * localT);
+  const g = Math.round(from[1] + (to[1] - from[1]) * localT);
+  const b = Math.round(from[2] + (to[2] - from[2]) * localT);
+  return `rgb(${r}, ${g}, ${b})`;
+}
+
+// "rgb(r, g, b)" 文字列を、指定した透明度のrgba()に変換する(背景の薄い塗りに使う)
+function colorToRgba(rgbString, alpha){
+  const nums = rgbString.match(/\d+/g);
+  return `rgba(${nums[0]}, ${nums[1]}, ${nums[2]}, ${alpha})`;
+}
+
+// 行の背景を、左(グラデーション最低色)から実際の出現率(%)の位置まで
+// 徐々に色が変化するグラデーションにする。単色の塗りより諧調がはっきり見えるようにするため。
+const IS_COARSE_POINTER = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+function rowGradientBackground(pctNum, color){
+  const pct = Math.max(0, Math.min(100, pctNum));
+  // グラデーションは.channelの背景(paddingを含む全幅)に対して描かれる一方、
+  // スライダーのつまみは.channelの左右padding(6px)分内側にあり、さらに
+  // つまみ自身の幅(16px)の半分だけ、track内側を移動する(0%でつまみ中心が完全な左端には来ない)。
+  // これを考慮したcalc()式にすることで、色の表示幅の端をつまみの実際の位置に一致させる。
+  const PADDING = 6;   // .channel の左右padding
+  const THUMB = IS_COARSE_POINTER ? 26 : 16;    // スライダーのつまみの幅(指操作の端末では大きくしている)
+  const leadingOffset = PADDING + THUMB / 2; // 14px
+  const travel = PADDING * 2 + THUMB;        // 28px(左右paddingとつまみ幅の合計)
+  // 生の出現率(%)ではなく、スライダーと同じ対数カーブ上の位置を使うことで、
+  // 色の表示幅がスライダーのつまみ位置と正確に一致するようにする。
+  const frac = pctToSliderPos(pct) / 100;
+  const stopExpr = `calc(${leadingOffset}px + (100% - ${travel}px) * ${frac})`;
+  // 2色のグラデーションではなく、この曲の出現率に応じた単色(0%は#073B4C、100%は#EF476F)で塗る。
+  return `linear-gradient(to right, ${colorToRgba(color, 0.55)} 0%, ${colorToRgba(color, 0.55)} ${stopExpr}, transparent ${stopExpr})`;
+}
+
+function matchesSearch(t){
+  if(!searchQuery) return true;
+  const q = searchQuery.toLowerCase();
+  return t.title.toLowerCase().includes(q) || (t.artist || '').toLowerCase().includes(q);
+}
+
+function render(){
+  consoleEl.innerHTML = '';
+  const total = totalEffectiveWeight();
+  const visibleTracks = tracks.filter(matchesSearch);
+
+  if(tracks.length === 0){
+    consoleEl.innerHTML = `<div class="empty-state"><strong>このプレイリストにはまだ曲がありません</strong><br>Spotifyの曲リストやリンクを貼り付けるか、Spotifyのプレイリストを読み込めます<br><button class="btn-spotify btn-inline" type="button" data-open-settings="secAdd"><span class="ic" aria-hidden="true">&#xe145;</span>曲を追加</button></div>`;
+  } else if(searchQuery && visibleTracks.length === 0){
+    consoleEl.innerHTML = `<div class="search-empty">「${searchQuery}」に一致する曲が見つかりません</div>`;
+  }
+
+  visibleTracks.forEach((t, idx) => {
+    const pct = formatPct(t.weight, total);
+    // 配色モード(平均基準/対数スケール/リスト内相対)に応じて色を決める
+    const color = pctToColor(Number(pct));
+    const row = document.createElement('div');
+    row.className = 'channel';
+    row.dataset.id = t.id;
+    row.style.background = rowGradientBackground(Number(pct), color);
+    row.innerHTML = `
+      <div class="channel-top">
+        <span class="drag-handle" title="ドラッグで並べ替え"><span class="ic" aria-hidden="true">&#xe945;</span></span>
+        <span class="track-num">${idx + 1}</span>
+        <div class="meta">
+          <div class="title">${t.title}</div>
+          <div class="artist">${t.artist}</div>
+        </div>
+        <div class="prob">
+          <div class="prob-row">
+            <input type="text" inputmode="decimal" class="prob-input" value="${pct}" data-id="${t.id}">
+            <span class="prob-pct-sign">%</span>
+          </div>
+          <div class="prob-label">出現率</div>
+        </div>
+        <button class="track-remove" data-id="${t.id}" title="この曲を削除" aria-label="この曲を削除"><span class="ic" aria-hidden="true">&#xe14c;</span></button>
+      </div>
+      <div class="fader-row">
+        <input type="range" min="0" max="100" step="0.01" value="${pctToSliderPos(Number(pct))}" data-id="${t.id}" style="--thumb-color:${color}">
+      </div>
+    `;
+    consoleEl.appendChild(row);
+  });
+
+  // 削除ボタン・スライダー・出現率入力欄のイベントは、行を描画するたびにここで
+  // 個別に登録するのではなく、consoleEl 側でまとめて処理する(下部の「イベント委譲」を参照)。
+  // これにより、新しく追加された曲の要素にも常に確実にイベントが効くようになる。
+
+  // ドラッグハンドルでの並べ替え(デスクトップ向け、ネイティブDrag and Drop)
+  let draggedId = null;
+  consoleEl.querySelectorAll('.channel').forEach(row => {
+    const handle = row.querySelector('.drag-handle');
+    handle.setAttribute('draggable', 'true');
+
+    handle.addEventListener('dragstart', (e) => {
+      draggedId = Number(row.dataset.id);
+      row.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      // ドラッグ中に表示される画像を行全体にする
+      e.dataTransfer.setDragImage(row, 20, 20);
+    });
+    handle.addEventListener('dragend', () => {
+      row.classList.remove('dragging');
+    });
+
+    row.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      row.classList.add('drag-over');
+    });
+    row.addEventListener('dragleave', () => {
+      row.classList.remove('drag-over');
+    });
+    row.addEventListener('drop', (e) => {
+      e.preventDefault();
+      row.classList.remove('drag-over');
+      const targetId = Number(row.dataset.id);
+      if(draggedId !== null && draggedId !== targetId){
+        reorderTracks(draggedId, targetId);
+      }
+      draggedId = null;
+    });
+  });
+
+  updateSelectionUI();
+  saveState();
+}
+
+// --- 曲リスト内の操作をイベント委譲でまとめて処理する ---
+// render()のたびに各要素へ個別にリスナーを付け直すのではなく、consoleEl自体に1回だけ登録する。
+// こうすることで、後から追加された曲の要素にも(再描画のタイミングに関わらず)確実にイベントが効く。
+
+// ドラッグ操作: スライダーの値=出現率(%)として直接反映する(0.01%刻み)
+consoleEl.addEventListener('input', (e) => {
+  const inp = e.target;
+
+  // 出現率(%)の入力欄: 整数部を2桁まで入力したら、自動で小数点を挿入する
+  // (例: "1"→"12"→3つ目の数字を打つと自動的に"12.3"になる。ただし"100"はそのまま)
+  if(inp.matches('input.prob-input')){
+    const raw = inp.value;
+    const digitsOnly = raw.replace(/[^\d.]/g, '');
+    if(!digitsOnly.includes('.') && digitsOnly.length > 2 && digitsOnly !== '100'){
+      const reformatted = digitsOnly.slice(0, 2) + '.' + digitsOnly.slice(2);
+      inp.value = reformatted;
+      // カーソル位置を末尾に維持する
+      const pos = reformatted.length;
+      if(typeof inp.setSelectionRange === 'function'){
+        try{ inp.setSelectionRange(pos, pos); } catch(err){ /* 対応していない環境では無視 */ }
+      }
+    }
+    return;
+  }
+
+  if(!inp.matches('input[type=range]')) return;
+  if(pendingTouchSnapshot){ snapshotForUndo(); pendingTouchSnapshot = false; }
+  const id = Number(inp.dataset.id);
+  // スライダーの値は「見た目上の位置」(対数カーブ)なので、実際の出現率に変換してから適用する
+  applyDesiredPercentage(id, sliderPosToPct(Number(inp.value)));
+  updateDisplays();
+});
+
+// クリック操作: スライダー上の任意の位置をクリックした時点で、その位置に対応する出現率(%)にジャンプ
+// (ブラウザによってはクリックだけでは動かない場合があるため明示的に処理する)
+// ※ ここで render() は呼ばない。DOMを作り直すとドラッグ継続時にポインタが
+//    外れてしまうため、値の更新だけを行う updateDisplays() を使う。
+// ※ 以前ここでポインタキャプチャ(setPointerCapture)を使っていたが、
+//    ボタンを離した後もカーソル移動だけでスライダーが動いてしまう不具合の原因になったため撤去し、
+//    ブラウザ標準のドラッグ挙動(ボタンを押している間だけ値が変わる)にそのまま任せている。
+let pendingTouchSnapshot = false;
+document.addEventListener('pointerup', () => { pendingTouchSnapshot = false; });
+document.addEventListener('pointercancel', () => { pendingTouchSnapshot = false; });
+consoleEl.addEventListener('pointerdown', (e) => {
+  const inp = e.target;
+  if(!inp.matches('input[type=range]')) return;
+  // 指での操作では、リストをスクロールしようとして触れただけで値が飛ばないよう、
+  // タップ位置へのジャンプは行わず、実際につまみを動かしたときだけ値を変える。
+  if(e.pointerType === 'touch'){ pendingTouchSnapshot = true; return; }
+  snapshotForUndo(); // ドラッグ・クリックの操作全体を1つのUndo単位にするため、開始時点で1回だけ記録する
+  const rect = inp.getBoundingClientRect();
+  const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+  const min = Number(inp.min), max = Number(inp.max);
+  const sliderPos = Math.round((min + ratio * (max - min)) * 100) / 100; // スライダー上の位置(0〜100)
+  const desiredPct = sliderPosToPct(sliderPos); // 対数カーブで実際の出現率に変換
+
+  inp.value = sliderPos;
+  const id = Number(inp.dataset.id);
+  applyDesiredPercentage(id, desiredPct);
+  updateDisplays();
+  saveState();
+});
+
+// パーセンテージ(出現率)の数値入力での調整
+consoleEl.addEventListener('change', (e) => {
+  const pctInp = e.target;
+  if(!pctInp.matches('input.prob-input')) return;
+  snapshotForUndo();
+  let pct = Number(pctInp.value);
+  if(Number.isNaN(pct)) pct = 0;
+  const id = Number(pctInp.dataset.id);
+  applyDesiredPercentage(id, pct);
+  updateDisplays();
+});
+consoleEl.addEventListener('keydown', (e) => {
+  if(!e.target.matches('input.prob-input')) return;
+  if(e.key === 'Enter'){
+    e.target.blur();
+    return;
+  }
+  // 上下キーで1%刻み調整(曲数が多いと自動計算される刻みが細かすぎて操作しづらいため)
+  if(e.key === 'ArrowUp' || e.key === 'ArrowDown'){
+    e.preventDefault();
+    const pctInp = e.target;
+    const id = Number(pctInp.dataset.id);
+    const current = Number(pctInp.value) || 0;
+    const next = current + (e.key === 'ArrowUp' ? 1 : -1);
+    snapshotForUndo();
+    applyDesiredPercentage(id, next);
+    updateDisplays();
+  }
+});
+
+// 出現率入力欄の上にマウスホイールを乗せたときも1%刻みで調整できるようにする
+consoleEl.addEventListener('wheel', (e) => {
+  if(!e.target.matches('input.prob-input')) return;
+  e.preventDefault();
+  const pctInp = e.target;
+  const id = Number(pctInp.dataset.id);
+  const current = Number(pctInp.value) || 0;
+  const next = current + (e.deltaY < 0 ? 1 : -1);
+  snapshotForUndo();
+  applyDesiredPercentage(id, next);
+  updateDisplays();
+}, { passive: false });
+
+// 削除ボタン
+consoleEl.addEventListener('click', (e) => {
+  const btn = e.target.closest('.track-remove');
+  if(!btn) return;
+  const id = Number(btn.dataset.id);
+  removeTrack(id);
+});
+
+// --- 元に戻す・やり直し(Undo/Redo) ---
+// 曲リスト(tracks)全体のスナップショットをJSON文字列として保存しておき、
+// 操作の直前に1回だけ記録することで、ドラッグ中の細かい変化などをまとめて1つの操作として扱う。
+let undoStack = [];
+let redoStack = [];
+const UNDO_LIMIT = 50;
+
+function snapshotForUndo(){
+  undoStack.push(JSON.stringify(tracks));
+  if(undoStack.length > UNDO_LIMIT) undoStack.shift();
+  redoStack = []; // 新しい操作をしたら、やり直し履歴は破棄する
+}
+
+function undo(){
+  if(undoStack.length === 0) return;
+  redoStack.push(JSON.stringify(tracks));
+  tracks = JSON.parse(undoStack.pop());
+  pruneSelectionToExistingTracks();
+  render();
+}
+
+function redo(){
+  if(redoStack.length === 0) return;
+  undoStack.push(JSON.stringify(tracks));
+  tracks = JSON.parse(redoStack.pop());
+  pruneSelectionToExistingTracks();
+  render();
+}
+
+// tracksの内容が変わった(Undo/Redoなど)後、もう存在しない曲を選択状態から取り除く
+function pruneSelectionToExistingTracks(){
+  const existingIds = new Set(tracks.map(t => t.id));
+  selectedTrackIds = new Set([...selectedTrackIds].filter(id => existingIds.has(id)));
+  if(selectionAnchorId !== null && !existingIds.has(selectionAnchorId)) selectionAnchorId = null;
+  if(activeTrackId !== null && !existingIds.has(activeTrackId)) activeTrackId = null;
+}
+
+// 選択中の曲のID群(複数選択に対応)。
+// - 素クリック: そのIDだけを選択
+// - Ctrl/Cmd+クリック: そのIDだけを追加/除外(トグル)
+// - Shift+クリック: 直前の基準(アンカー)からそのIDまでの範囲を選択
+// - ドラッグ: 掴んだ行から、なぞった行までを範囲選択
+let selectedTrackIds = new Set();
+let selectionAnchorId = null; // Shift+クリックや範囲選択の基準
+let activeTrackId = null;     // ↑/↓やEnterの対象になる「現在位置」
+
+function getVisibleTrackIds(){
+  return tracks.filter(matchesSearch).map(t => t.id);
+}
+
+function selectSingle(id){
+  selectedTrackIds = new Set([id]);
+  selectionAnchorId = id;
+  activeTrackId = id;
+  updateSelectionUI();
+}
+
+function toggleTrackInSelection(id){
+  const next = new Set(selectedTrackIds);
+  if(next.has(id)) next.delete(id); else next.add(id);
+  selectedTrackIds = next;
+  selectionAnchorId = id;
+  activeTrackId = id;
+  updateSelectionUI();
+}
+
+function selectRange(fromId, toId){
+  const ids = getVisibleTrackIds();
+  const i1 = ids.indexOf(fromId);
+  const i2 = ids.indexOf(toId);
+  if(i1 === -1 || i2 === -1) return;
+  const [lo, hi] = i1 < i2 ? [i1, i2] : [i2, i1];
+  selectedTrackIds = new Set(ids.slice(lo, hi + 1));
+  activeTrackId = toId;
+  updateSelectionUI();
+}
+
+function selectAllVisible(){
+  selectedTrackIds = new Set(getVisibleTrackIds());
+  if(selectedTrackIds.size > 0){
+    selectionAnchorId = getVisibleTrackIds()[0];
+    activeTrackId = [...selectedTrackIds][selectedTrackIds.size - 1];
+  }
+  updateSelectionUI();
+}
+
+function clearSelection(){
+  selectedTrackIds = new Set();
+  selectionAnchorId = null;
+  activeTrackId = null;
+  updateSelectionUI();
+}
+
+function updateSelectionUI(){
+  consoleEl.querySelectorAll('.channel').forEach(row => {
+    row.classList.toggle('selected', selectedTrackIds.has(Number(row.dataset.id)));
+  });
+}
+
+// --- ドラッグでの範囲選択 ---
+// スライダー・入力欄・ボタン・ドラッグハンドル以外の場所を掴んで、
+// 別の行までなぞると、その間の行がまとめて選択される。
+let isRangeSelecting = false;
+
+// 選択済みの曲をもう一度クリック(タッチ端末は選択済みの曲をタップ)したら、その曲を再生する
+let playOnClickId = null;
+let lastPtrType = 'mouse';
+let suppressRowClickUntil = 0;
+function playTrackNow(id){
+  if(typeof skewSpotifyPlayer !== 'undefined' && skewSpotifyPlayer){ skewSpotifyPlayer.activateElement().catch(() => {}); }
+  const track = tracks.find(t => t.id === id);
+  if(!track) return;
+  isPlaying = true;
+  updatePlayButtonUI();
+  playHistory = playHistory.slice(0, historyIndex + 1);
+  playHistory.push(track);
+  historyIndex = playHistory.length - 1;
+  displayAndPlay(track);
+}
+consoleEl.addEventListener('pointerdown', (e) => {
+  lastPtrType = e.pointerType;
+  playOnClickId = null;
+  if(e.pointerType === 'touch') return;
+  if(e.target.closest('input, button, .drag-handle')) return;
+  if(e.button !== 0 || e.shiftKey || e.ctrlKey || e.metaKey) return;
+  const row = e.target.closest('.channel');
+  if(!row) return;
+  const id = Number(row.dataset.id);
+  if(selectedTrackIds.size === 1 && selectedTrackIds.has(id)) playOnClickId = id;
+}, true);
+consoleEl.addEventListener('click', (e) => {
+  if(Date.now() < suppressRowClickUntil) return;
+  if(e.target.closest('input, button, .drag-handle')) return;
+  const row = e.target.closest('.channel');
+  if(!row) return;
+  const id = Number(row.dataset.id);
+  if(lastPtrType === 'touch'){
+    if(selectedTrackIds.size === 1 && selectedTrackIds.has(id)) playTrackNow(id);
+    else selectSingle(id);
+    return;
+  }
+  if(playOnClickId === id) playTrackNow(id);
+  playOnClickId = null;
+});
+
+consoleEl.addEventListener('pointerdown', (e) => {
+  if(e.pointerType === 'touch') return;
+  if(e.target.closest('input, button, .drag-handle')) return;
+  const row = e.target.closest('.channel');
+  if(!row) return;
+  e.preventDefault(); // ドラッグ中にブラウザのテキスト選択が発生しないようにする
+  const id = Number(row.dataset.id);
+
+  if(e.shiftKey && selectionAnchorId !== null){
+    selectRange(selectionAnchorId, id);
+  } else if(e.ctrlKey || e.metaKey){
+    toggleTrackInSelection(id);
+  } else {
+    selectSingle(id);
+  }
+  isRangeSelecting = true;
+});
+
+consoleEl.addEventListener('pointerenter', (e) => {
+  if(!isRangeSelecting) return;
+  if(!(e.buttons & 1)) { isRangeSelecting = false; return; } // ボタンが離れていたら終了
+  const row = e.target.closest ? e.target.closest('.channel') : null;
+  if(!row || selectionAnchorId === null) return;
+  selectRange(selectionAnchorId, Number(row.dataset.id));
+}, true);
+
+document.addEventListener('pointerup', () => {
+  isRangeSelecting = false;
+});
+
+// クリック(選択)は上のpointerdownで処理済みなので、
+// 通常のクリックイベントでは行の選択ロジックを実行しない(二重処理を防ぐ)。
+
+// 選択中の曲に対するキーボードショートカット
+// ↑/↓: 選択(単一)を前後の曲へ移動 / Shift+↑/↓: 範囲選択を拡張
+// Delete・Backspace: 選択中の曲(複数可)を削除 / Enter: 現在位置の曲を今すぐ再生
+// Escape: 選択解除 / Ctrl/Cmd+A: 表示中の全曲を選択
+// Ctrl/Cmd+Z: 元に戻す / Ctrl/Cmd+Shift+Z・Ctrl/Cmd+Y: やり直し
+document.addEventListener('keydown', (e) => {
+  const active = document.activeElement;
+  const isEditable = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable);
+  if(isEditable) return; // 検索欄やSpotify貼り付け欄などへの入力中は無効化する
+  if(document.documentElement.classList.contains('sheet-open')) return;
+
+  const meta = e.ctrlKey || e.metaKey;
+  if(meta && e.key.toLowerCase() === 'z'){
+    e.preventDefault();
+    if(e.shiftKey) redo(); else undo();
+    return;
+  }
+  if(meta && e.key.toLowerCase() === 'y'){
+    e.preventDefault();
+    redo();
+    return;
+  }
+  if(meta && e.key.toLowerCase() === 'a'){
+    e.preventDefault();
+    selectAllVisible();
+    return;
+  }
+
+  if(e.key === 'Escape' && selectedTrackIds.size > 0){
+    e.preventDefault();
+    clearSelection();
+    return;
+  }
+
+  if(activeTrackId === null) return;
+
+  if(e.key === 'ArrowDown' || e.key === 'ArrowUp'){
+    e.preventDefault();
+    const visible = getVisibleTrackIds(); // 現在表示されている順序に合わせる
+    const idx = visible.indexOf(activeTrackId);
+    if(idx === -1) return;
+    const nextIdx = e.key === 'ArrowDown' ? Math.min(idx + 1, visible.length - 1) : Math.max(idx - 1, 0);
+    const nextId = visible[nextIdx];
+
+    if(e.shiftKey){
+      // 範囲選択を拡張する(基準=アンカーは変えない)
+      if(selectionAnchorId === null) selectionAnchorId = activeTrackId;
+      selectRange(selectionAnchorId, nextId);
+    } else {
+      selectSingle(nextId);
+    }
+    const row = consoleEl.querySelector(`.channel[data-id="${nextId}"]`);
+    if(row && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'nearest' });
+  } else if(e.key === 'Delete' || e.key === 'Backspace'){
+    e.preventDefault();
+    removeSelectedTracks();
+  } else if(e.key === 'Enter'){
+    e.preventDefault();
+    const track = tracks.find(t => t.id === activeTrackId);
+    if(!track) return;
+    isPlaying = true;
+    updatePlayButtonUI();
+    playHistory = playHistory.slice(0, historyIndex + 1);
+    playHistory.push(track);
+    historyIndex = playHistory.length - 1;
+    displayAndPlay(track);
+  }
+});
+
+// 選択中の曲(複数可)をまとめて削除する
+function removeSelectedTracks(){
+  if(selectedTrackIds.size === 0) return;
+  showToast(`${selectedTrackIds.size}曲を削除しました`, { undo: true });
+  snapshotForUndo();
+  tracks = tracks.filter(t => !selectedTrackIds.has(t.id));
+  clearSelection();
+  render();
+}
+
+// id1 の曲を id2 の曲の位置に移動する(ドラッグ&ドロップ用)
+function reorderTracks(id1, id2){
+  const fromIdx = tracks.findIndex(t => t.id === id1);
+  const toIdx = tracks.findIndex(t => t.id === id2);
+  if(fromIdx === -1 || toIdx === -1) return;
+  snapshotForUndo();
+  const [moved] = tracks.splice(fromIdx, 1);
+  tracks.splice(toIdx, 0, moved);
+  render();
+}
+
+// 既存の曲と重複しない新しいIDを発行する
+function getNextTrackId(){
+  return tracks.reduce((max, t) => Math.max(max, t.id), 0) + 1;
+}
+
+// 新しく追加する曲の初期の重みを決める。
+// 固定値(例:50)だと、重みと出現率が指数的な関係にあるため、既存の曲が調整によって
+// 低い重みに偏っている場合、新しく追加した曲だけ極端に出現率が高くなってしまう。
+// 既存の曲の中で最も小さい重みの半分に合わせることで、新しく追加した曲が一番控えめになるようにする。
+function getDefaultWeightForNewTrack(){
+  if(tracks.length === 0) return 50;
+  const min = Math.min(...tracks.map(t => t.weight));
+  return min > 0 ? min / 2 : 50;
+}
+
+// 指定IDの曲を削除する
+function removeTrack(id){
+  const removed = tracks.find(t => t.id === id);
+  showToast(removed ? `「${removed.title}」を削除しました` : '削除しました', { undo: true });
+  snapshotForUndo();
+  tracks = tracks.filter(t => t.id !== id);
+  pruneSelectionToExistingTracks();
+  render();
+}
+
+// 曲を指定した基準で並び替える。
+// "recent" はID(追加順に発行される連番)の降順で「最近追加した順」を表す。
+// "pct-desc" は出現率(effectiveWeightは合計に対する割合と同じ順序になるためそのまま比較できる)の高い順。
+// 同じ項目をもう一度選ぶと、並び順(昇順/降順)が反転する。
+const SORT_LABELS = {
+  title: 'タイトル名',
+  artist: 'アーティスト名',
+  recent: '最近追加した順',
+  'pct-desc': '出現率の高い順'
+};
+
+let currentSort = null;
+let sortDir = 1; // 1: 各基準のデフォルト方向 / -1: 反転
+
+function sortTracks(kind){
+  snapshotForUndo();
+  if(currentSort === kind){
+    sortDir *= -1;
+  } else {
+    currentSort = kind;
+    sortDir = 1;
+  }
+
+  const collator = new Intl.Collator('ja');
+  let cmp;
+  if(kind === 'title'){
+    cmp = (a, b) => collator.compare(a.title, b.title);
+  } else if(kind === 'artist'){
+    cmp = (a, b) => collator.compare(a.artist || '', b.artist || '');
+  } else if(kind === 'recent'){
+    cmp = (a, b) => b.id - a.id;
+  } else if(kind === 'pct-desc'){
+    cmp = (a, b) => effectiveWeight(b.weight) - effectiveWeight(a.weight);
+  }
+  tracks.sort((a, b) => cmp(a, b) * sortDir);
+
+  render();
+  updateSortUI();
+}
+
+function updateSortUI(){
+  const dirArrow = sortDir === 1 ? '▲' : '▼';
+  // ボタンはアイコンのみ。何で並べているかは長押し/マウスを乗せたときの説明と、メニュー内の表示で分かるようにする
+  sortMainBtn.title = currentSort ? `並び替え: ${SORT_LABELS[currentSort]} ${dirArrow}` : '並び替え';
+  sortMainBtn.setAttribute('aria-label', sortMainBtn.title);
+  sortMainBtn.classList.toggle('is-set', !!currentSort);
+
+  document.querySelectorAll('.sort-option').forEach(opt => {
+    const isActive = opt.dataset.sort === currentSort;
+    opt.classList.toggle('active', isActive);
+    const dirSpan = opt.querySelector('.sort-dir');
+    if(dirSpan) dirSpan.remove();
+    if(isActive){
+      const span = document.createElement('span');
+      span.className = 'sort-dir';
+      span.textContent = dirArrow;
+      opt.appendChild(span);
+    }
+  });
+}
+
+const sortMainBtn = document.getElementById('sortMainBtn');
+const sortMenuEl = document.getElementById('sortMenu');
+
+sortMainBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  sortMenuEl.classList.toggle('open');
+  colorModeMenuEl.classList.remove('open');
+});
+
+document.querySelectorAll('.sort-option').forEach(opt => {
+  opt.addEventListener('click', () => {
+    sortTracks(opt.dataset.sort);
+    sortMenuEl.classList.remove('open');
+  });
+});
+
+// メニュー外をクリックしたら閉じる
+document.addEventListener('click', (e) => {
+  if(!sortMenuEl.contains(e.target) && e.target !== sortMainBtn){
+    sortMenuEl.classList.remove('open');
+  }
+});
+
+// --- 配色モードのドロップダウン ---
+const COLOR_MODE_LABELS = {
+  average: '平均基準',
+  log: '対数スケール',
+  relative: 'リスト内相対'
+};
+
+const colorModeBtn = document.getElementById('colorModeBtn');
+const colorModeMenuEl = document.getElementById('colorModeMenu');
+
+function updateColorModeUI(){
+  colorModeBtn.title = `配色: ${COLOR_MODE_LABELS[colorMode]}`;
+  colorModeBtn.setAttribute('aria-label', colorModeBtn.title);
+  document.querySelectorAll('.color-mode-option').forEach(opt => {
+    opt.classList.toggle('active', opt.dataset.colorMode === colorMode);
+  });
+}
+
+colorModeBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  colorModeMenuEl.classList.toggle('open');
+  sortMenuEl.classList.remove('open');
+});
+
+document.querySelectorAll('.color-mode-option').forEach(opt => {
+  opt.addEventListener('click', () => {
+    colorMode = opt.dataset.colorMode;
+    updateColorModeUI();
+    colorModeMenuEl.classList.remove('open');
+    render();
+  });
+});
+
+document.addEventListener('click', (e) => {
+  if(!colorModeMenuEl.contains(e.target) && e.target !== colorModeBtn){
+    colorModeMenuEl.classList.remove('open');
+  }
+});
+
+updateColorModeUI();
+
+// 指定トラックの出現率を desiredPct(%) にする(0〜100の範囲にクランプ)。
+// 他のトラックの重みの合計が大きく、このトラックの重みを上限100まで上げても desiredPct に
+// 届かない場合は、他のトラックの重みを比例的に縮小して枠を作ることで、どんな出現率にも到達できるようにする。
+// (旧: 100%指定時だけ他を0にする特別扱いをしていたが、これはその一般化になっている)
+// 出現率(%)入力欄とフェーダー(スライダー)の両方から共通で使う。
+function applyDesiredPercentage(id, pct){
+  if(Number.isNaN(pct)) return; // 不正な値は無視して既存の状態を壊さない
+  pct = Math.max(0, Math.min(100, pct));
+  const track = tracks.find(t => t.id === id);
+  if(!track) return;
+
+  if(pct <= 0){
+    track.weight = 0;
+    return;
+  }
+
+  const others = tracks.filter(t => t.id !== id);
+
+  // 他の曲のうち、以前(別の曲を高い出現率にした際など)重みが0になり、かつ
+  // 以前の重み(savedWeight)を記憶している曲があれば、ここで個別に復活させる。
+  // 「他の合計がちょうど0のときだけ」ではなく毎回・曲ごとに判定することで、
+  // 新しく曲を追加した後など、合計が0でなくなった場合でも記憶を確実に反映できるようにする。
+  others.forEach(t => {
+    if(t.weight <= 0 && t.savedWeight > 0){
+      t.weight = t.savedWeight;
+    }
+  });
+
+  let othersSum = others.reduce((s, t) => s + effectiveWeight(t.weight), 0);
+  const p = pct / 100;
+
+  if(othersSum <= 0){
+    if(others.length === 0){
+      // 他に曲が無い場合はそのままでよい
+      if(track.weight <= 0) track.weight = 50;
+      return;
+    }
+    // 記憶も無く他の曲が全部0(初回など)の場合のみ、均等に割り振ってから計算し直す
+    others.forEach(t => { t.weight = 50; });
+    othersSum = others.reduce((s, t) => s + effectiveWeight(t.weight), 0);
+  }
+
+  // このトラックの重みを上限100まで使ったときに許容できる「他の合計」の最大値。
+  // 実際の他の合計がこれ以下なら、このトラックの重みだけで desiredPct を実現できる。
+  const neededOthersSum = effectiveWeight(100) * (1 - p) / p;
+
+  if(othersSum <= neededOthersSum){
+    const targetEffective = (p * othersSum) / (1 - p);
+    let weight = Math.pow(targetEffective, 1 / EXP_FACTOR);
+    weight = Math.max(0, Math.min(100, weight));
+    if(Number.isFinite(weight)) track.weight = weight;
+  } else {
+    // このトラックを上限まで上げても届かないため、他のトラックの重みを
+    // (お互いの比率は保ったまま)比例的に縮小して desiredPct ぶんの枠を作る。
+    // 縮小で失われる前の重みを覚えておき、後で100%未満に戻されたときに同じ比率で復活できるようにする。
+    others.forEach(t => {
+      if(t.weight > 0) t.savedWeight = t.weight;
+    });
+    track.weight = 100;
+    const scale = Math.pow(neededOthersSum / othersSum, 1 / EXP_FACTOR);
+    others.forEach(t => {
+      const scaled = t.weight * scale;
+      t.weight = Number.isFinite(scaled) ? scaled : 0;
+    });
+  }
+}
+
+// フェーダーのDOMを再生成せずに、数値表示(%)だけを更新する。
+// ドラッグやクリック操作の最中に呼ぶための軽量な更新関数。
+function updateDisplays(){
+  const total = totalEffectiveWeight();
+  tracks.forEach(t => {
+    const pct = formatPct(t.weight, total);
+    const color = pctToColor(Number(pct));
+    const inp = consoleEl.querySelector(`input[type=range][data-id="${t.id}"]`);
+    if(!inp) return;
+    const row = inp.closest('.channel');
+    // スライダー自身が操作中(フォーカス中)は、こちらから値を上書きしない
+    if(document.activeElement !== inp){
+      const targetPos = pctToSliderPos(Number(pct));
+      if(Math.abs(Number(inp.value) - targetPos) > 0.001){
+        inp.value = targetPos;
+      }
+    }
+    row.style.background = rowGradientBackground(Number(pct), color);
+    inp.style.setProperty('--thumb-color', color);
+    const probInp = row.querySelector('.prob-input');
+    if(probInp && document.activeElement !== probInp){
+      probInp.value = pct;
+    }
+  });
+}
+
+function pickWeighted(){
+  if(tracks.length === 0) return null;
+  const total = totalEffectiveWeight();
+  let r = Math.random() * total;
+  for(const t of tracks){
+    const ew = effectiveWeight(t.weight);
+    if(r < ew) return t;
+    r -= ew;
+  }
+  return tracks[tracks.length-1];
+}
+
+// --- 再生・停止 / 前へ / 次へ ボタン ---
+let isPlaying = false;
+const backBtn = document.getElementById('backBtn');
+const playStopBtn = document.getElementById('playStopBtn');
+const skipBtn = document.getElementById('skipBtn');
+
+function updatePlayButtonUI(){
+  playStopBtn.innerHTML = isPlaying
+    ? '<span class="ic" aria-hidden="true">&#xe034;</span>'
+    : '<span class="ic" aria-hidden="true">&#xe037;</span>';
+  playStopBtn.title = isPlaying ? '一時停止' : '再生';
+  playStopBtn.setAttribute('aria-label', playStopBtn.title);
+}
+
+playStopBtn.addEventListener('click', async () => {
+  if(typeof skewSpotifyPlayer !== 'undefined' && skewSpotifyPlayer){ skewSpotifyPlayer.activateElement().catch(() => {}); }
+  if(!isPlaying){
+    isPlaying = true;
+    updatePlayButtonUI();
+    // 一時停止していた曲があればその続きから、なければ出現率に従って新しく選ぶ
+    if(historyIndex >= 0 && isActiveProviderConnected()){
+      const resumed = await resumeActivePlayback();
+      if(!resumed) advanceWeighted();
+    } else {
+      advanceWeighted();
+    }
+  } else {
+    isPlaying = false;
+    updatePlayButtonUI();
+    pauseActivePlayback();
+  }
+});
+
+function isActiveProviderConnected(){
+  if(activeProvider === 'spotify') return !!spotifyAccessToken;
+  if(activeProvider === 'youtube') return !!ytPlayerReady;
+  if(activeProvider === 'apple') return !!(appleMusicInstance && appleMusicInstance.isAuthorized);
+  return false;
+}
+
+async function spotifyPlayerCommand(endpoint){
+  const deviceId = deviceSelectEl.value;
+  const q = deviceId ? `?device_id=${encodeURIComponent(deviceId)}` : '';
+  const res = await fetch(`https://api.spotify.com/v1/me/player/${endpoint}${q}`, {
+    method: 'PUT',
+    headers: { 'Authorization': 'Bearer ' + spotifyAccessToken }
+  });
+  return res.ok || res.status === 204;
+}
+
+async function pauseActivePlayback(){
+  try{
+    if(activeProvider === 'spotify' && spotifyAccessToken) await spotifyPlayerCommand('pause');
+    else if(activeProvider === 'youtube' && ytPlayer && ytPlayerReady) ytPlayer.pauseVideo();
+    else if(activeProvider === 'apple' && appleMusicInstance) await appleMusicInstance.pause();
+  } catch(err){ console.error(err); }
+}
+
+async function resumeActivePlayback(){
+  try{
+    if(activeProvider === 'spotify') return await spotifyPlayerCommand('play');
+    if(activeProvider === 'youtube'){ ytPlayer.playVideo(); return true; }
+    if(activeProvider === 'apple'){ await appleMusicInstance.play(); return true; }
+  } catch(err){ console.error(err); }
+  return false;
+}
+
+skipBtn.addEventListener('click', () => {
+  if(!isPlaying){
+    isPlaying = true;
+    updatePlayButtonUI();
+  }
+  advanceWeighted();
+});
+
+backBtn.addEventListener('click', () => {
+  if(!isPlaying){
+    isPlaying = true;
+    updatePlayButtonUI();
+  }
+  goToPrevious();
+});
+
+// --- Spotifyの曲リストを貼り付けて追加 ---
+const spotifyAppendBtn = document.getElementById('spotifyAppendBtn');
+const spotifyPasteInp = document.getElementById('spotifyPaste');
+const spotifyStatusEl = document.getElementById('spotifyStatus');
+
+function setSpotifyStatus(msg, kind){
+  spotifyStatusEl.textContent = msg;
+  spotifyStatusEl.className = 'spotify-status' + (kind ? ' ' + kind : '');
+  const waiting = typeof spotifyBackoffUntil !== 'undefined' && Date.now() < spotifyBackoffUntil && /429/.test(msg);
+  if(kind === 'error' && !waiting) showToast(msg, { error: true });
+}
+
+// 1行を「曲名」「アーティスト名」に分割する。
+// Spotifyアプリで曲を全選択してコピーすると、タブ区切りで
+// 「曲名 <TAB> アーティスト <TAB> アルバム ...」の形式で貼り付けられるため、まずタブ区切りを優先的に判定する。
+// タブが無い場合は "-" "–" "—" "/" "|" のいずれかの区切り記号(曲名側に含まれる場合を考え、最後に出てくるものを採用)で分割する。
+function parseTrackLine(line){
+  if(line.includes('\t')){
+    const cols = line.split('\t').map(c => c.trim());
+    // ヘッダー行(「曲名」「タイトル」「Title」など)は曲データではないのでスキップの目印として空を返す
+    if(/^(曲名|タイトル|title|track|track name)$/i.test(cols[0])){
+      return null;
+    }
+    return { title: cols[0] || '無題', artist: cols[1] || '' };
+  }
+
+  const separators = /[-–—/|]/g;
+  const matches = [...line.matchAll(separators)];
+  if(matches.length === 0){
+    return { title: line.trim(), artist: '' };
+  }
+  const last = matches[matches.length - 1];
+  const title = line.slice(0, last.index).trim();
+  const artist = line.slice(last.index + 1).trim();
+  if(!title){
+    return { title: line.trim(), artist: '' };
+  }
+  return { title, artist };
+}
+
+// SpotifyのトラックURLかどうかを判定し、トラックIDを取り出す
+function extractSpotifyTrackId(line){
+  const match = line.match(/open\.spotify\.com\/track\/([a-zA-Z0-9]+)/);
+  return match ? match[1] : null;
+}
+
+// SpotifyのoEmbed(公開API・認証不要)で、トラックURLから曲名を取得する。
+// 例: https://open.spotify.com/oembed?url=https://open.spotify.com/track/xxxx
+async function fetchTrackTitleFromUrl(url){
+  const oembedUrl = `https://open.spotify.com/oembed?url=${encodeURIComponent(url)}`;
+  const res = await fetch(oembedUrl);
+  if(!res.ok) throw new Error(`oEmbed取得失敗 (status ${res.status})`);
+  const data = await res.json();
+  // oEmbedのtitleは基本的に曲名のみ("曲名 · アーティスト"のような形式のこともある)
+  const raw = (data.title || '').trim();
+  const parts = raw.split(/\s*·\s*/); // 中点で曲名とアーティストが分かれている場合に対応
+  return {
+    title: parts[0] || raw || '無題',
+    artist: parts.length > 1 ? parts.slice(1).join(' ') : '',
+    spotifyId: extractSpotifyTrackId(url)
+  };
+}
+
+async function importFromSpotifyUrls(urls){
+  setSpotifyStatus(`Spotifyから曲情報を取得中… (0/${urls.length})`);
+  const results = [];
+  let done = 0;
+
+  // 同時に投げすぎないよう5件ずつまとめて処理する
+  const chunkSize = 5;
+  for(let i = 0; i < urls.length; i += chunkSize){
+    const chunk = urls.slice(i, i + chunkSize);
+    const settled = await Promise.allSettled(chunk.map(u => fetchTrackTitleFromUrl(u)));
+    settled.forEach(r => {
+      done++;
+      if(r.status === 'fulfilled') results.push(r.value);
+    });
+    setSpotifyStatus(`Spotifyから曲情報を取得中… (${done}/${urls.length})`);
+  }
+
+  if(results.length === 0){
+    throw new Error('曲情報を取得できませんでした');
+  }
+
+  // getNextTrackId()は現在のtracks配列を基準に計算するため、map()の中でそのまま呼ぶと
+  // (このループ中はtracksが更新されないので)全件が同じIDになってしまう。
+  // 基準IDを1回だけ取得し、そこにインデックスを足して連番にする。
+  const baseId = getNextTrackId();
+  const defaultWeight = getDefaultWeightForNewTrack();
+  const newTracks = results.map((t, i) => ({
+    id: baseId + i,
+    title: t.title,
+    artist: t.artist,
+    weight: defaultWeight,
+    spotifyId: t.spotifyId || null,
+    addedAt: nextAddedAt()
+  }));
+
+  snapshotForUndo();
+  tracks = tracks.concat(newTracks);
+
+  // 既にSpotifyへログイン済みなら、正式なWeb APIでアーティスト名などを補完する
+  if(spotifyAccessToken){
+    await refreshTrackMetadataFromSpotify();
+  }
+
+  const failedCount = urls.length - results.length;
+  const verb = `${newTracks.length}曲を追加しました`;
+  setSpotifyStatus(
+    failedCount > 0 ? `${verb}(${failedCount}曲は取得失敗)` : verb,
+    'success'
+  );
+  render();
+}
+
+async function importFromSpotify(){
+  const raw = spotifyPasteInp.value;
+  const lines = raw.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+
+  if(lines.length === 0){
+    setSpotifyStatus('曲名またはSpotifyのリンクを貼り付けてください', 'error');
+    return;
+  }
+
+  // 貼り付けた内容がSpotifyのトラックリンクの場合は、oEmbed APIで曲名を自動取得する
+  const trackUrls = lines.filter(l => extractSpotifyTrackId(l) !== null);
+  if(trackUrls.length > 0){
+    spotifyAppendBtn.disabled = true;
+    try{
+      await importFromSpotifyUrls(trackUrls);
+    } catch(err){
+      console.error(err);
+      setSpotifyStatus('読み込みに失敗しました: ' + err.message, 'error');
+    } finally {
+      spotifyAppendBtn.disabled = false;
+    }
+    return;
+  }
+
+  // それ以外は、これまで通りテキストとして解析する
+  const defaultWeight = getDefaultWeightForNewTrack();
+  const newTracks = [];
+  lines.forEach(line => {
+    const parsed = parseTrackLine(line);
+    if(parsed === null) return; // ヘッダー行などはスキップ
+    newTracks.push({ id: getNextTrackId() + newTracks.length, title: parsed.title || '無題', artist: parsed.artist, weight: defaultWeight, addedAt: nextAddedAt() });
+  });
+
+  if(newTracks.length === 0){
+    setSpotifyStatus('曲データを認識できませんでした', 'error');
+    return;
+  }
+
+  snapshotForUndo();
+  tracks = tracks.concat(newTracks);
+  setSpotifyStatus(`${newTracks.length}曲を追加しました`, 'success');
+  render();
+}
+
+spotifyAppendBtn.addEventListener('click', () => importFromSpotify());
+spotifyPasteInp.addEventListener('keydown', (e) => {
+  if(e.key === 'Enter' && (e.metaKey || e.ctrlKey)) importFromSpotify();
+});
+
+// --- Spotify再生連携(OAuth・デバイス選択・自動再生) ---
+let spotifyAccessToken = null; // ページ内メモリのみに保持(リロードで消える)
+
+const playbackConnEl = document.getElementById('playbackConn');
+const playbackSetupEl = document.getElementById('playbackSetup');
+const playbackDeviceRowEl = document.getElementById('playbackDeviceRow');
+const playbackTransportEl = document.getElementById('playbackTransport');
+const playPauseBtn = document.getElementById('playPauseBtn');
+const skipNextBtn = document.getElementById('skipNextBtn');
+const clientIdInp = document.getElementById('spotifyClientId');
+const redirectUriInp = document.getElementById('spotifyRedirectUri');
+const loginBtn = document.getElementById('spotifyLoginBtn');
+const deviceSelectEl = document.getElementById('deviceSelect');
+const refreshDevicesBtn = document.getElementById('refreshDevicesBtn');
+const autoPlayToggle = document.getElementById('autoPlayToggle');
+const copyRedirectBtn = document.getElementById('copyRedirectBtn');
+
+// --- 再生サービスの切り替え(Spotify / YouTube Music / Apple Music) ---
+let activeProvider = 'spotify';
+const providerPanels = {
+  spotify: document.getElementById('providerPanelSpotify'),
+  youtube: document.getElementById('providerPanelYoutube'),
+  apple: document.getElementById('providerPanelApple')
+};
+
+function setActiveProvider(name){
+  activeProvider = name;
+  document.querySelectorAll('.provider-tab').forEach(tab => {
+    tab.classList.toggle('active', tab.dataset.provider === name);
+  });
+  Object.entries(providerPanels).forEach(([key, el]) => {
+    el.style.display = key === name ? 'block' : 'none';
+  });
+  updateProviderConnectionUI();
+}
+
+document.querySelectorAll('.provider-tab').forEach(tab => {
+  tab.addEventListener('click', () => setActiveProvider(tab.dataset.provider));
+});
+
+// 現在選ばれているサービスの接続状態に合わせて、上部のバッジと再生系UIの表示を切り替える
+function updateProviderConnectionUI(){
+  let connected = false;
+  if(activeProvider === 'spotify') connected = !!spotifyAccessToken;
+  else if(activeProvider === 'youtube') connected = ytPlayerReady;
+  else if(activeProvider === 'apple') connected = !!(appleMusicInstance && appleMusicInstance.isAuthorized);
+
+  playbackConnEl.textContent = connected ? '接続済み' : '未接続';
+  playbackConnEl.classList.toggle('connected', connected);
+  playbackTransportEl.style.display = connected ? 'flex' : 'none';
+}
+
+// 現在選ばれているサービスで曲を再生する(共通の入り口)
+async function playTrackViaActiveProvider(track){
+  if(activeProvider === 'spotify'){
+    return await playChosenOnSpotify(track);
+  }
+  if(activeProvider === 'youtube'){
+    try{
+      await playTrackOnYouTube(track);
+      setSpotifyStatus(`YouTube Musicで再生中: ${track.title}`, 'success');
+      return true;
+    } catch(err){
+      console.error(err);
+      setSpotifyStatus('YouTube再生エラー: ' + err.message, 'error');
+      return false;
+    }
+  }
+  if(activeProvider === 'apple'){
+    try{
+      await playTrackOnAppleMusic(track);
+      setSpotifyStatus(`Apple Musicで再生中: ${track.title}`, 'success');
+      return true;
+    } catch(err){
+      console.error(err);
+      setSpotifyStatus('Apple Music再生エラー: ' + err.message, 'error');
+      return false;
+    }
+  }
+  return false;
+}
+
+// Capacitorのネイティブアプリ(iOS/Mac)内で動いているかどうかを判定する
+function isNativePlatform(){
+  return !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+}
+// ネイティブアプリでは、ブラウザのURLではなく専用のカスタムURLスキームを
+// Redirect URIとして使う(OSが直接アプリに戻してくれるため、ブラウザ操作が不要になる)。
+const NATIVE_REDIRECT_URI = 'skew://callback';
+
+// このページ自身のURL(クエリ・ハッシュを除く)、またはネイティブアプリ用のカスタムURLを
+// Redirect URIとして表示する
+redirectUriInp.value = isNativePlatform() ? NATIVE_REDIRECT_URI : location.href.split('#')[0].split('?')[0].replace(/index\.html$/, '');
+
+copyRedirectBtn.addEventListener('click', async () => {
+  try{
+    await navigator.clipboard.writeText(redirectUriInp.value);
+    copyRedirectBtn.textContent = 'コピーしました';
+    setTimeout(() => { copyRedirectBtn.textContent = 'コピー'; }, 1500);
+  } catch(e){
+    redirectUriInp.select();
+  }
+});
+
+// PKCE用のランダムなcode_verifierを生成する(RFC7636で許可された文字のみ使用)
+function generatePkceVerifier(length){
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+  let result = '';
+  const values = crypto.getRandomValues(new Uint8Array(length));
+  values.forEach(v => { result += chars[v % chars.length]; });
+  return result;
+}
+
+// code_verifierからSHA-256 + Base64URLでcode_challengeを作る
+async function pkceChallengeFromVerifier(verifier){
+  const data = new TextEncoder().encode(verifier);
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  const bytes = new Uint8Array(digest);
+  let binary = '';
+  bytes.forEach((b) => { binary += String.fromCharCode(b); });
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+loginBtn.addEventListener('click', async () => {
+  const clientId = clientIdInp.value.trim() || DEFAULT_SPOTIFY_CLIENT_ID;
+  if(!window.crypto || !window.crypto.subtle){
+    setSpotifyStatus('この環境では暗号化APIが使えないため、https(または localhost)で開き直してください', 'error');
+    return;
+  }
+
+  const native = isNativePlatform();
+  let popup = null;
+
+  if(!native){
+    // ポップアップは非同期処理(PKCEの計算)を挟む前に、クリックと同期的に開いておく。
+    // awaitの後でwindow.open()すると、多くのブラウザでユーザー操作との結びつきが切れたと
+    // みなされ、ポップアップブロックの対象になってしまうため。
+    popup = window.open('', 'spotify-login', 'width=480,height=680');
+    // ポップアップがブロックされたときは、このタブのままSpotifyのログイン画面へ移動する(戻ってきたら自動でログイン完了)
+
+  }
+
+  const redirectUri = redirectUriInp.value;
+  const scope = [
+    'streaming',
+    'user-read-email',
+    'user-read-playback-state',
+    'user-modify-playback-state',
+    'user-read-currently-playing',
+    'user-read-private',
+    'playlist-read-private',
+    'playlist-read-collaborative',
+    'user-library-read',
+    'user-library-modify'
+  ].join(' ');
+
+  const verifier = generatePkceVerifier(64);
+  const challenge = await pkceChallengeFromVerifier(verifier);
+  // ストレージを使わずに済むよう、code_verifierとclient_idをstateに載せて往復させる
+  const state = `${verifier}::${clientId}`;
+
+  const authUrl = 'https://accounts.spotify.com/authorize' +
+    '?client_id=' + encodeURIComponent(clientId) +
+    '&response_type=code' +
+    '&redirect_uri=' + encodeURIComponent(redirectUri) +
+    '&scope=' + encodeURIComponent(scope) +
+    '&code_challenge_method=S256' +
+    '&code_challenge=' + encodeURIComponent(challenge) +
+    '&state=' + encodeURIComponent(state) +
+    '';
+
+  if(native){
+    // ネイティブアプリでは、外部ブラウザ(Safari)でログイン画面を開く。
+    // ログイン完了後はOSがカスタムURLスキーム経由でこのアプリに直接戻してくれる。
+    try{
+      await window.Capacitor.Plugins.Browser.open({ url: authUrl });
+    } catch(err){
+      console.error(err);
+      setSpotifyStatus('ブラウザを開けませんでした: ' + err.message, 'error');
+    }
+  } else if(popup){
+    popup.location.href = authUrl;
+  } else {
+    location.href = authUrl;
+  }
+});
+
+// Spotifyからトークンを受け取ったときの共通の後処理(Web版のポップアップ・
+// ネイティブアプリのカスタムURLスキームどちらから来た場合も使う)
+let spotifyRefreshTimer = null;
+
+// Spotify Web Playback SDK: Skew自身をSpotify Connect端末として登録し、
+// 別タブのSpotify Web Playerに頼らず、このページ内で音声を再生する。
+let skewSpotifyPlayer = null;
+let skewSpotifyDeviceId = null;
+let skewSpotifySdkLoading = false;
+let skewSpotifyLastError = '';
+
+// 再生先をSkew自身の端末などに切り替える(play:false=切り替えのみ)
+async function transferSpotifyPlayback(deviceId){
+  const r = await fetch('https://api.spotify.com/v1/me/player', {
+    method: 'PUT',
+    headers: { 'Authorization': 'Bearer ' + spotifyAccessToken, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ device_ids: [deviceId], play: false })
+  });
+  return r.ok || r.status === 204;
+}
+
+// SDKの端末を作り直して、新しい device_id を待つ(最大8秒)
+async function reconnectSkewSpotifyPlayer(){
+  const p = skewSpotifyPlayer;
+  if(!p) return null;
+  skewSpotifyDeviceId = null;
+  let handler = null;
+  const ready = new Promise(resolve => {
+    handler = ({ device_id }) => resolve(device_id);
+    p.addListener('ready', handler);
+    setTimeout(() => resolve(null), 8000);
+  });
+  try{ p.disconnect(); }catch(e){}
+  await p.connect().catch(() => false);
+  const id = await ready;
+  try{ p.removeListener('ready', handler); }catch(e){}
+  return id;
+}
+
+function loadSpotifyWebPlaybackSDK(){
+  if(window.Spotify && window.Spotify.Player) return Promise.resolve();
+  if(window.__skewSpotifySdkPromise) return window.__skewSpotifySdkPromise;
+
+  window.__skewSpotifySdkPromise = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Spotify Web Playback SDKの読み込みがタイムアウトしました')), 20000);
+    window.onSpotifyWebPlaybackSDKReady = () => {
+      clearTimeout(timeout);
+      resolve();
+    };
+    const script = document.createElement('script');
+    script.src = 'https://sdk.scdn.co/spotify-player.js';
+    script.async = true;
+    script.onerror = () => {
+      clearTimeout(timeout);
+      reject(new Error('Spotify Web Playback SDKを読み込めませんでした'));
+    };
+    document.head.appendChild(script);
+  });
+  return window.__skewSpotifySdkPromise;
+}
+
+async function initializeSkewSpotifyPlayer(){
+  if(skewSpotifyPlayer || skewSpotifySdkLoading || !spotifyAccessToken) return;
+  skewSpotifySdkLoading = true;
+  try{
+    // 「streaming」の許可がない古いログインのままだと、SDKの端末は作れない
+    let authScope = '';
+    try{ authScope = (loadSpotifyAuth() || {}).scope || ''; }catch(e){}
+    if(authScope && !/\bstreaming\b/.test(authScope)){
+      skewSpotifyLastError = 'ログイン時の許可に「streaming」がありません';
+      throw new Error('このタブで再生するには再ログインが必要です(許可「streaming」が足りません)。歯車からログアウト→ログインしてください');
+    }
+    await loadSpotifyWebPlaybackSDK();
+    const player = new window.Spotify.Player({
+      name: (isNativePlatform() ? 'Skew' : 'Skew (このタブ)'),
+      volume: 0.8,
+      getOAuthToken: async cb => {
+        // SDKからトークンを要求されたときは、可能な限り最新のものを渡す。
+        if(!spotifyAccessToken){
+          const refreshed = await refreshSpotifyAccessToken().catch(() => null);
+          if(refreshed) spotifyAccessToken = refreshed;
+        }
+        if(spotifyAccessToken) cb(spotifyAccessToken);
+      },
+      enableMediaSession: true
+    });
+
+    player.addListener('ready', ({ device_id }) => {
+      skewSpotifyDeviceId = device_id;
+      setSpotifyStatus('Skewの再生端末が準備できました', 'success');
+      refreshDevices().then(() => { if(skewSpotifyDeviceId) deviceSelectEl.value = skewSpotifyDeviceId; });
+    });
+    player.addListener('not_ready', () => {
+      skewSpotifyDeviceId = null;
+      setSpotifyStatus('Skewの再生端末が切断されました。ページを再読み込みしてください', 'error');
+    });
+    player.addListener('initialization_error', ({ message }) => {
+      skewSpotifyLastError = message;
+      setSpotifyStatus('Spotifyプレイヤー初期化エラー: ' + message, 'error');
+    });
+    player.addListener('authentication_error', ({ message }) => {
+      skewSpotifyLastError = message;
+      setSpotifyStatus('Spotifyプレイヤー認証エラー: ' + message + '。一度ログアウトして再ログインしてください', 'error');
+    });
+    player.addListener('account_error', ({ message }) => {
+      skewSpotifyLastError = message;
+      setSpotifyStatus('Spotify Premiumが必要です: ' + message, 'error');
+    });
+    player.addListener('playback_error', ({ message }) => {
+      skewSpotifyLastError = message;
+      setSpotifyStatus('Spotify再生エラー: ' + message, 'error');
+    });
+    player.addListener('autoplay_failed', () => {
+      setSpotifyStatus('ブラウザが自動再生を制限しました。Skewの再生ボタンをもう一度押してください', 'error');
+    });
+    player.addListener('player_state_changed', state => {
+      if(!state || !state.track_window || !state.track_window.current_track) return;
+      const current = state.track_window.current_track;
+      nowTitleEl.textContent = current.name || '';
+      nowArtistEl.textContent = (current.artists || []).map(a => a.name).join(', ');
+      if(window.skewSeeking) return;
+      progressElapsedEl.textContent = formatMs(state.position || 0);
+      progressTotalEl.textContent = formatMs(state.duration || 0);
+      progressFillEl.style.width = state.duration > 0 ? `${Math.min(100, (state.position / state.duration) * 100)}%` : '0%';
+    });
+
+    const connected = await player.connect();
+    if(!connected) throw new Error('SkewのSpotify再生端末に接続できませんでした');
+    skewSpotifyPlayer = player;
+  } catch(err){
+    console.error(err);
+    setSpotifyStatus(err.message || 'Spotify Web Playback SDKの初期化に失敗しました', 'error');
+  } finally {
+    skewSpotifySdkLoading = false;
+  }
+}
+
+
+// Skew自身(Web Playback SDKの端末)で再生する。ready直後の404に備えて、切り替え→再試行→端末作り直しの順で粘る。
+async function spotifyPlayOnSkewDevice(spotifyId){
+  if(!skewSpotifyDeviceId) return null;
+  const headers = { 'Authorization': 'Bearer ' + spotifyAccessToken, 'Content-Type': 'application/json' };
+  let body = { uris: ['spotify:track:' + spotifyId] };
+  const doPlay = (dev) => fetch('https://api.spotify.com/v1/me/player/play?device_id=' + encodeURIComponent(dev), { method: 'PUT', headers, body: JSON.stringify(body) });
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  let dev = skewSpotifyDeviceId;
+  let res = await doPlay(dev);
+  for(let i = 0; i < 2 && res.status === 404; i++){
+    await transferSpotifyPlayback(dev).catch(() => {});
+    await sleep(900 * (i + 1));
+    res = await doPlay(dev);
+  }
+  if(res.status === 404){
+    const newId = await reconnectSkewSpotifyPlayer();
+    if(newId){ dev = newId; await transferSpotifyPlayback(newId).catch(() => {}); await sleep(1000); res = await doPlay(newId); }
+  }
+  return res;
+}
+function onSpotifyTokenReceived(token, opts){
+  opts = opts || {};
+  spotifyAccessToken = token;
+  // Skew単体で再生: Web Playback SDKでSkew自身を再生端末にする(使えない環境ではSpotifyアプリで再生)
+  initializeSkewSpotifyPlayer();
+  playbackSetupEl.style.display = 'none';
+  playbackDeviceRowEl.style.display = 'flex';
+  if(activeProvider !== 'spotify') setActiveProvider('spotify');
+  updateProviderConnectionUI();
+  refreshDevices();
+  startProgressPolling();
+  refreshTrackMetadataFromSpotify();
+  enableAutoNext();
+  if(!opts.silent) showToast('Spotifyに接続しました');
+  spotifyProfile = null;
+  renderAccount();
+  saveState();
+  // アクセストークンは1時間で切れるため、50分ごとに自動で更新する
+  clearInterval(spotifyRefreshTimer);
+  spotifyRefreshTimer = setInterval(async () => {
+    const t = await refreshSpotifyAccessToken().catch(() => null);
+    if(t) spotifyAccessToken = t;
+  }, 50 * 60 * 1000);
+}
+
+// 「曲が終わったら自動で次へ」を、接続した時点で自動的にオンにする
+function enableAutoNext(){
+  if(!autoPlayToggle.checked){
+    autoPlayToggle.checked = true;
+  }
+  startAutoDj();
+}
+
+function spotifyLogout(){
+  saveSpotifyAuth(null);
+  spotifyAccessToken = null;
+  if(skewSpotifyPlayer){
+    skewSpotifyPlayer.disconnect();
+    skewSpotifyPlayer = null;
+  }
+  skewSpotifyDeviceId = null;
+  clearInterval(spotifyRefreshTimer);
+  stopAutoDj();
+  autoPlayToggle.checked = false;
+  playbackSetupEl.style.display = '';
+  playbackDeviceRowEl.style.display = 'none';
+  updateProviderConnectionUI();
+  spotifyProfile = null;
+  renderAccount();
+  document.getElementById('spotifyPlaylistList').innerHTML = '';
+  showToast('Spotifyからログアウトしました');
+}
+
+// ネイティブアプリ: カスタムURLスキーム(skew://callback)でアプリに戻ってきたときの処理
+if(isNativePlatform() && window.Capacitor.Plugins.App){
+  window.Capacitor.Plugins.App.addListener('appUrlOpen', async (data) => {
+    try{
+      const url = new URL(data.url);
+      const code = url.searchParams.get('code');
+      const returnedState = url.searchParams.get('state');
+      const authError = url.searchParams.get('error');
+
+      if(authError){
+        setSpotifyStatus('Spotifyログインに失敗しました: ' + authError, 'error');
+        return;
+      }
+      if(!code) return; // このアプリ宛の別のURL(通常起動など)であれば何もしない
+
+      const verifier = returnedState ? returnedState.split('::')[0] : null;
+      const storedClientId = returnedState ? returnedState.split('::')[1] : null;
+      const token = await exchangeCodeForToken(code, verifier, storedClientId, NATIVE_REDIRECT_URI);
+      onSpotifyTokenReceived(token);
+
+      if(window.Capacitor.Plugins.Browser){
+        window.Capacitor.Plugins.Browser.close().catch(() => {});
+      }
+    } catch(err){
+      console.error(err);
+      setSpotifyStatus('Spotifyログインに失敗しました: ' + err.message, 'error');
+    }
+  });
+}
+
+// ポップアップからのトークンを受け取る
+window.addEventListener('message', (event) => {
+  if(event.data && event.data.type === 'spotify-token-error'){
+    setSpotifyStatus('Spotifyログインに失敗しました: ' + event.data.message, 'error');
+    return;
+  }
+  if(event.data && event.data.type === 'spotify-token' && event.data.token){
+    onSpotifyTokenReceived(event.data.token);
+  }
+});
+
+// ログイン前はSpotifyの公開API(oEmbed)では曲名しか取得できずアーティスト名が空になるため、
+// ログイン後に正式なWeb APIで曲名・アーティスト名を取得し直して補完する
+async function refreshTrackMetadataFromSpotify(){
+  if(!spotifyAccessToken) return;
+  const targets = tracks.filter(t => t.spotifyId);
+  if(targets.length === 0) return;
+
+  const chunkSize = 50; // Web APIの /v1/tracks は一度に最大50件まで
+  for(let i = 0; i < targets.length; i += chunkSize){
+    const chunk = targets.slice(i, i + chunkSize);
+    const ids = chunk.map(t => t.spotifyId).join(',');
+    try{
+      const res = await fetch(`https://api.spotify.com/v1/tracks?ids=${encodeURIComponent(ids)}`, {
+        headers: { 'Authorization': 'Bearer ' + spotifyAccessToken }
+      });
+      if(!res.ok) continue;
+      const data = await res.json();
+      (data.tracks || []).forEach((info, idx) => {
+        if(!info) return;
+        const track = chunk[idx];
+        track.title = info.name || track.title;
+        if(info.artists && info.artists.length){
+          track.artist = info.artists.map(a => a.name).join(', ');
+        }
+      });
+    } catch(err){
+      console.error(err);
+    }
+  }
+  render();
+}
+
+// 再生バー(経過時間・プログレスバー)をSpotifyの再生状態に合わせて定期的に更新する
+let progressPollTimer = null;
+async function pollProgress(){
+  if(!spotifyAccessToken) return;
+  if(typeof skewSpotifyPlayer !== 'undefined' && skewSpotifyPlayer && skewSpotifyDeviceId) return; // 進捗はプレイヤーのイベントで更新する
+  try{
+    const res = await fetch('https://api.spotify.com/v1/me/player', {
+      headers: { 'Authorization': 'Bearer ' + spotifyAccessToken }
+    });
+    if(res.status === 204 || !res.ok) return;
+    const data = await res.json();
+    if(!data || !data.item) return;
+
+    if(window.skewSeeking) return; // 再生バーをドラッグ中は表示を上書きしない
+    const progressMs = data.progress_ms || 0;
+    const durationMs = data.item.duration_ms || 0;
+    progressElapsedEl.textContent = formatMs(progressMs);
+    progressTotalEl.textContent = formatMs(durationMs);
+    progressFillEl.style.width = durationMs > 0 ? `${Math.min(100, (progressMs / durationMs) * 100)}%` : '0%';
+
+    // 曲名とアーティスト名は、Spotify側で実際に再生している同じ曲の情報で更新する。
+    // 再生命令を送った直後に古い曲の情報で上書きされるのを防ぐ。
+    const isExpectedTrack = !currentPlayingSpotifyId || data.item.id === currentPlayingSpotifyId;
+    if(isExpectedTrack){
+      if(data.item.name) nowTitleEl.textContent = data.item.name;
+      if(data.item.artists && data.item.artists.length){
+        nowArtistEl.textContent = data.item.artists.map(a => a.name).join(', ');
+      }
+    }
+  } catch(err){
+    console.error(err);
+  }
+}
+function startProgressPolling(){
+  if(progressPollTimer) return;
+  pollProgress();
+  progressPollTimer = setInterval(() => { if(!document.hidden) pollProgress(); }, 5000);
+}
+
+async function refreshDevices(){
+  if(!spotifyAccessToken) return;
+  try{
+    const res = await fetch('https://api.spotify.com/v1/me/player/devices', {
+      headers: { 'Authorization': 'Bearer ' + spotifyAccessToken }
+    });
+    if(res.status === 429) return; // 混み合っているときは黙って次の機会に任せる
+    if(!res.ok) throw new Error(`デバイス一覧の取得に失敗 (status ${res.status})`);
+    const data = await res.json();
+    const devices = data.devices || [];
+    lastSpotifyDevices = devices;
+
+    const prevSelected = deviceSelectEl.value;
+    deviceSelectEl.innerHTML = '';
+    if(devices.length === 0){
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'Spotifyアプリを開くと、ここに表示されます';
+      deviceSelectEl.appendChild(opt);
+      return;
+    }
+    devices.forEach(d => {
+      const opt = document.createElement('option');
+      opt.value = d.id;
+      opt.textContent = `${d.name}${d.is_active ? '(再生中)' : ''}`;
+      deviceSelectEl.appendChild(opt);
+    });
+    // 再生中の端末 → 前回選んでいた端末 → このスマホ/PC の順で自動的に選ぶ
+    const active = devices.find(d => d.is_active);
+    const prev = devices.find(d => d.id === prevSelected);
+    const phone = devices.find(d => d.type === 'Smartphone' || d.type === 'Computer');
+    const appDev = devices.find(d => !/^Skew/i.test(d.name || '') && !/web ?player/i.test(d.name || ''));
+    const pick = prev || appDev || active || phone || devices[0];
+    deviceSelectEl.value = pick.id;
+  } catch(err){
+    console.error(err);
+    setSpotifyStatus('デバイス一覧の取得に失敗しました: ' + err.message, 'error');
+  }
+}
+refreshDevicesBtn.addEventListener('click', refreshDevices);
+
+// 曲名・アーティストからSpotifyの検索APIでトラックURIを探す(リンク取り込みでない曲用)
+async function searchSpotifyTrackUri(track){
+  const q = encodeURIComponent(`track:${track.title} artist:${track.artist || ''}`);
+  const res = await fetch(`https://api.spotify.com/v1/search?q=${q}&type=track&limit=1`, {
+    headers: { 'Authorization': 'Bearer ' + spotifyAccessToken }
+  });
+  if(!res.ok) throw new Error(`検索に失敗 (status ${res.status})`);
+  const data = await res.json();
+  const item = data.tracks && data.tracks.items && data.tracks.items[0];
+  return item ? item.id : null;
+}
+
+// 現在Spotifyで再生を指示している曲のID(ポーリングでの終了検知に使う)
+let currentPlayingSpotifyId = null;
+let autoDjTimer = null;
+
+// 曲を実際にSpotifyで再生する(リンク取り込み済みならID直接、そうでなければ検索で解決)
+async function playChosenOnSpotify(track){
+  if(!spotifyAccessToken){
+    setSpotifyStatus('Spotifyにログインしていません。設定(右上の歯車)からログインしてください', 'error');
+    return false;
+  }
+  try{
+    let spotifyId = track.spotifyId;
+    if(!spotifyId){
+      spotifyId = await searchSpotifyTrackUri(track);
+    }
+    if(!spotifyId){
+      setSpotifyStatus(`「${track.title}」がSpotify上で見つかりませんでした`, 'error');
+      return false;
+    }
+
+    // Skew単体で再生する(Skew自身をSpotifyの再生端末にする)。Spotifyアプリには頼らない。
+    // ページを開いた直後でSkewの再生端末がまだ準備中なら、最大10秒待つ
+    if(!skewSpotifyDeviceId){
+      if(!skewSpotifyPlayer && !skewSpotifySdkLoading) initializeSkewSpotifyPlayer();
+      setSpotifyStatus('Skewの再生端末を準備しています…', '');
+      for(let i = 0; i < 20 && !skewSpotifyDeviceId; i++) await new Promise(r => setTimeout(r, 500));
+    }
+    if(!skewSpotifyDeviceId){
+      const why = skewSpotifyLastError ? '(' + skewSpotifyLastError + ')' : '';
+      setSpotifyStatus('Skewの再生端末を準備できませんでした' + why + '。Spotify Premiumのアカウントで、歯車からログアウト→ログインし直してください', 'error');
+      return false;
+    }
+    let res = await spotifyPlayOnSkewDevice(spotifyId);
+    // 混み合っている(429)ときはエラーにせず、待ち時間が終わってから自動でもう一度再生する
+    for(let i = 0; i < 3 && res && res.status === 429; i++){
+      const waitMs = Math.max(2000, (typeof spotifyBackoffUntil !== 'undefined' ? spotifyBackoffUntil : 0) - Date.now() + 500);
+      setSpotifyStatus(`Spotifyが混み合っているため、${Math.ceil(waitMs / 1000)}秒後に自動で再生します…`, '');
+      await new Promise(r => setTimeout(r, Math.min(waitMs, 120000)));
+      res = await spotifyPlayOnSkewDevice(spotifyId);
+    }
+    if(!res || (!res.ok && res.status !== 204)){
+      const bodyText = res ? await res.text().catch(() => '') : '';
+      const st = res ? res.status : 0;
+      if(st === 429){ setSpotifyStatus('Spotifyが混み合っています。しばらくしてから再生してください', ''); return false; }
+      if(st === 403 && /PREMIUM/i.test(bodyText)) throw new Error('Spotify Premiumが必要です');
+      if(st === 401 || st === 403) throw new Error('許可が足りません。ログアウトしてもう一度ログインしてください (status ' + st + ')');
+      if(st === 404) throw new Error('Skewの再生端末が見つかりません。ページを再読み込みしてください');
+      throw new Error(`再生に失敗 (status ${st}) ${bodyText.slice(0,120)}`);
+    }
+    currentPlayingSpotifyId = spotifyId;
+    spotifyPlaybackConfirmed = false;
+    spotifyPlayStartedAt = Date.now();
+    setSpotifyStatus(`Skewで再生中: ${track.title}`, 'success');
+    return true;
+  } catch(err){
+    console.error(err);
+    setSpotifyStatus('Spotify再生エラー: ' + err.message, 'error');
+    return false;
+  }
+}
+
+// 「前へ」ボタンのための内部再生履歴(画面には表示しない)
+let playHistory = [];
+let historyIndex = -1;
+
+// 指定した曲を画面に反映しつつSpotifyで再生する(履歴には追加しない、表示専用の共通処理)
+async function displayAndPlay(track){
+  nowTitleEl.textContent = track.title;
+  nowTitleEl.classList.remove('spinning');
+  nowArtistEl.textContent = track.artist || '';
+  // 曲が切り替わった直後は進捗が分からないため、いったんゼロ表示にリセットする
+  progressFillEl.style.width = '0%';
+  progressElapsedEl.textContent = '0:00';
+  progressTotalEl.textContent = '0:00';
+  const ok = await playTrackViaActiveProvider(track);
+  if(ok === false){ // 再生に失敗したら自動送りを止める(曲名だけが次々変わるのを防ぐ)
+    isPlaying = false;
+    updatePlayButtonUI();
+  }
+  return ok;
+}
+
+// 重みに従って次の曲を選び、再生履歴に追加してから再生する(連続再生の1ステップ)
+async function advanceWeighted(){
+  const chosen = pickWeighted();
+  if(!chosen){
+    nowTitleEl.textContent = '曲を追加してください';
+    nowArtistEl.textContent = '';
+    isPlaying = false;
+    updatePlayButtonUI();
+    return;
+  }
+  // 「前へ」で戻っていた場合、そこから新たに進むと、それより先の履歴は破棄する
+  playHistory = playHistory.slice(0, historyIndex + 1);
+  playHistory.push(chosen);
+  historyIndex = playHistory.length - 1;
+  await displayAndPlay(chosen);
+}
+
+// 再生履歴を1つ前に戻る
+async function goToPrevious(){
+  if(historyIndex <= 0){
+    setSpotifyStatus('これより前の曲はありません', 'error');
+    return;
+  }
+  historyIndex--;
+  await displayAndPlay(playHistory[historyIndex]);
+}
+
+// 再生/一時停止を切り替える(現在の状態をSpotifyに問い合わせてから反転させる)
+async function togglePlayPause(){
+  playPauseBtn.disabled = true;
+  try{
+    if(activeProvider === 'spotify'){
+      await toggleSpotifyPlayPause();
+    } else if(activeProvider === 'youtube'){
+      if(!ytPlayer){ setSpotifyStatus('先にYouTube Musicへ接続してください', 'error'); return; }
+      const state = ytPlayer.getPlayerState(); // 1 = 再生中
+      if(state === 1){ ytPlayer.pauseVideo(); playPauseBtn.textContent = '▶'; }
+      else { ytPlayer.playVideo(); playPauseBtn.textContent = '⏸'; }
+    } else if(activeProvider === 'apple'){
+      if(!appleMusicInstance){ setSpotifyStatus('先にApple Musicへ接続してください', 'error'); return; }
+      if(appleMusicInstance.isPlaying){ await appleMusicInstance.pause(); playPauseBtn.textContent = '▶'; }
+      else { await appleMusicInstance.play(); playPauseBtn.textContent = '⏸'; }
+    }
+  } catch(err){
+    console.error(err);
+    setSpotifyStatus('再生操作エラー: ' + err.message, 'error');
+  } finally {
+    playPauseBtn.disabled = false;
+  }
+}
+
+async function toggleSpotifyPlayPause(){
+  if(!spotifyAccessToken){
+    setSpotifyStatus('先にSpotifyへ接続してください', 'error');
+    return;
+  }
+  const deviceId = skewSpotifyDeviceId || deviceSelectEl.value;
+  if(!deviceId){
+    setSpotifyStatus('SkewのSpotify再生端末がまだ準備できていません', 'error');
+    return;
+  }
+
+  const stateRes = await fetch('https://api.spotify.com/v1/me/player', {
+    headers: { 'Authorization': 'Bearer ' + spotifyAccessToken }
+  });
+  let isPlaying = false;
+  if(stateRes.status !== 204 && stateRes.ok){
+    const data = await stateRes.json();
+    isPlaying = !!data.is_playing;
+  }
+
+  const endpoint = isPlaying ? 'pause' : 'play';
+  const res = await fetch(`https://api.spotify.com/v1/me/player/${endpoint}?device_id=${encodeURIComponent(deviceId)}`, {
+    method: 'PUT',
+    headers: { 'Authorization': 'Bearer ' + spotifyAccessToken }
+  });
+  if(!res.ok && res.status !== 204){
+    const bodyText = await res.text().catch(() => '');
+    throw new Error(`操作に失敗 (status ${res.status}) ${bodyText.slice(0,120)}`);
+  }
+
+  playPauseBtn.textContent = isPlaying ? '▶' : '⏸';
+  setSpotifyStatus(isPlaying ? '一時停止しました' : '再生を再開しました', 'success');
+}
+
+// 次へ: このアプリの重みに従って次の曲を選び直す(Spotify標準の「次へ」ではない)
+async function skipToNext(){
+  if(!spotifyAccessToken){
+    setSpotifyStatus('先にSpotifyへ接続してください', 'error');
+    return;
+  }
+  if(!deviceSelectEl.value){
+    setSpotifyStatus('再生先デバイスが選択されていません', 'error');
+    return;
+  }
+  skipNextBtn.disabled = true;
+  try{
+    await advanceWeighted();
+    playPauseBtn.textContent = '⏸';
+  } finally {
+    skipNextBtn.disabled = false;
+  }
+}
+
+playPauseBtn.addEventListener('click', () => {
+  if(skewSpotifyPlayer){
+    // autoplay制限のあるブラウザ向けに、クリックのユーザー操作中にプレイヤーを有効化する。
+    skewSpotifyPlayer.activateElement().catch(() => {});
+  }
+  togglePlayPause();
+});
+skipNextBtn.addEventListener('click', skipToNext);
+
+// 曲がもうすぐ終わる/既に終わっているかをSpotifyの再生状態から判定し、
+// 該当すれば次の曲を自動で選んで再生する
+let spotifyPlaybackConfirmed = false; // 実際にSpotifyで再生が始まったことを確認できたか
+let spotifyPlayStartedAt = 0;
+function stopBecauseNoSound(){
+  isPlaying = false;
+  updatePlayButtonUI();
+  setSpotifyStatus('Skewで再生が始まりません。ページを再読み込みしてから、もう一度お試しください(Spotify Premiumが必要です)', 'error');
+}
+async function pollAndAdvance(){
+  if(!spotifyAccessToken) return;
+  // Skew自身の再生端末で再生中は、Spotifyへ問い合わせず手元のプレイヤーの状態で判断する(アクセス回数を減らす)
+  if(typeof skewSpotifyPlayer !== 'undefined' && skewSpotifyPlayer && skewSpotifyDeviceId){
+    try{
+      const st = await skewSpotifyPlayer.getCurrentState();
+      const cur = st && st.track_window && st.track_window.current_track;
+      if(!cur){
+        if(spotifyPlaybackConfirmed) await advanceWeighted();
+        else if(Date.now() - spotifyPlayStartedAt > 10000) stopBecauseNoSound();
+        return;
+      }
+      const isOurs = !currentPlayingSpotifyId || cur.id === currentPlayingSpotifyId || (cur.linked_from && cur.linked_from.id === currentPlayingSpotifyId);
+      if(!st.paused && isOurs) spotifyPlaybackConfirmed = true;
+      if(!spotifyPlaybackConfirmed){
+        if(Date.now() - spotifyPlayStartedAt > 10000) stopBecauseNoSound();
+        return;
+      }
+      if((st.paused && st.position === 0) || !isOurs){ await advanceWeighted(); return; }
+      const remaining = (st.duration || 0) - (st.position || 0);
+      if(!st.paused && remaining > 0 && remaining < POLL_INTERVAL_MS){
+        clearTimeout(window.__skewEndCheck);
+        window.__skewEndCheck = setTimeout(() => { if(isPlaying) pollAndAdvance(); }, remaining + 600);
+      }
+    } catch(e){ console.error(e); }
+    return;
+  }
+  try{
+    const res = await fetch('https://api.spotify.com/v1/me/player', {
+      headers: { 'Authorization': 'Bearer ' + spotifyAccessToken }
+    });
+
+    if(res.status === 204){
+      // 何も再生されていない。再生を確認できていた曲なら「終わった」ので次へ。
+      // まだ一度も再生を確認できていないなら、再生に失敗しているので止める(曲名だけが変わり続けないように)。
+      if(spotifyPlaybackConfirmed) await advanceWeighted();
+      else if(Date.now() - spotifyPlayStartedAt > 8000) stopBecauseNoSound();
+      return;
+    }
+    if(!res.ok) return; // 一時的なエラーは無視して次のポーリングに任せる
+
+    const data = await res.json();
+    if(!data || !data.item){
+      if(spotifyPlaybackConfirmed) await advanceWeighted();
+      else if(Date.now() - spotifyPlayStartedAt > 8000) stopBecauseNoSound();
+      return;
+    }
+    const isSameAsRequested = currentPlayingSpotifyId && (data.item.id === currentPlayingSpotifyId || (data.item.linked_from && data.item.linked_from.id === currentPlayingSpotifyId));
+    if(isSameAsRequested && data.is_playing){
+      spotifyPlaybackConfirmed = true;
+    }
+
+    // 「曲が終わった」タイミングと「Spotify側で手動スキップされた」タイミングを検知する。
+    // 一時停止だけでは反応しない(is_playingは見ない)。
+    const remaining = data.item.duration_ms - data.progress_ms;
+    // 曲の終わりが次の定期チェックより前なら、終わる直後にもう一度だけ確認する(曲間の空白を減らす)
+    if(remaining > 0 && remaining < POLL_INTERVAL_MS && data.is_playing){
+      clearTimeout(window.__skewEndCheck);
+      window.__skewEndCheck = setTimeout(() => { if(isPlaying) pollAndAdvance(); }, remaining + 400);
+    }
+    const skippedManually = spotifyPlaybackConfirmed && currentPlayingSpotifyId && !isSameAsRequested;
+
+    if((spotifyPlaybackConfirmed && remaining <= 0) || skippedManually){
+      await advanceWeighted();
+    }
+  } catch(err){
+    console.error(err);
+  }
+}
+
+const POLL_INTERVAL_MS = 5000;
+
+function startAutoDj(){
+  if(autoDjTimer) return;
+  autoDjTimer = setInterval(() => {
+    if(!isPlaying) return; // 再生ボタンで止めている間は何もしない
+    if(activeProvider === 'spotify') pollAndAdvance();
+    else if(activeProvider === 'youtube') pollYouTubeAndAdvance();
+    else if(activeProvider === 'apple') pollAppleAndAdvance();
+  }, POLL_INTERVAL_MS);
+}
+
+// YouTube / Apple Music: 曲が終わったら次へ
+function pollYouTubeAndAdvance(){
+  if(!ytPlayer || !ytPlayerReady) return;
+  try{
+    if(ytPlayer.getPlayerState() === 0) advanceWeighted(); // 0 = 終了
+  } catch(e){ /* 無視 */ }
+}
+let appleWasPlaying = false;
+function pollAppleAndAdvance(){
+  if(!appleMusicInstance) return;
+  const playing = !!appleMusicInstance.isPlaying;
+  // 再生中→停止に変わり、かつ曲の終わり付近なら「終わった」とみなす
+  if(appleWasPlaying && !playing){
+    const remain = (appleMusicInstance.currentPlaybackDuration || 0) - (appleMusicInstance.currentPlaybackTime || 0);
+    if(remain < 2) advanceWeighted();
+  }
+  appleWasPlaying = playing;
+}
+
+function stopAutoDj(){
+  if(autoDjTimer){
+    clearInterval(autoDjTimer);
+    autoDjTimer = null;
+  }
+}
+
+autoPlayToggle.addEventListener('change', () => {
+  if(autoPlayToggle.checked){
+    const ready =
+      (activeProvider === 'spotify' && spotifyAccessToken && deviceSelectEl.value) ||
+      (activeProvider === 'youtube' && ytPlayerReady) ||
+      (activeProvider === 'apple' && appleMusicInstance && appleMusicInstance.isAuthorized);
+    if(!ready){
+      setSpotifyStatus('先に再生サービスへ接続してください', 'error');
+      autoPlayToggle.checked = false;
+      return;
+    }
+    startAutoDj();
+  } else {
+    stopAutoDj();
+  }
+});
+
+// --- YouTube Music(YouTube IFrame Player API、ログイン不要) ---
+let ytPlayer = null;
+let ytPlayerReady = false;
+const youtubeApiKeyInp = document.getElementById('youtubeApiKey');
+const youtubeConnectBtn = document.getElementById('youtubeConnectBtn');
+
+function loadYouTubeIframeApi(){
+  return new Promise((resolve) => {
+    if(window.YT && window.YT.Player){ resolve(); return; }
+    const prevCallback = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = () => {
+      if(typeof prevCallback === 'function') prevCallback();
+      resolve();
+    };
+    if(document.getElementById('yt-iframe-api-script')) return;
+    const tag = document.createElement('script');
+    tag.id = 'yt-iframe-api-script';
+    tag.src = 'https://www.youtube.com/iframe_api';
+    document.head.appendChild(tag);
+  });
+}
+
+async function ensureYouTubePlayer(){
+  if(ytPlayer && ytPlayerReady) return ytPlayer;
+  await loadYouTubeIframeApi();
+  return new Promise((resolve) => {
+    ytPlayer = new YT.Player('ytPlayerContainer', {
+      height: '80',
+      width: '100%',
+      videoId: '',
+      playerVars: { playsinline: 1 },
+      events: {
+        onReady: () => {
+          ytPlayerReady = true;
+          updateProviderConnectionUI();
+          resolve(ytPlayer);
+        }
+      }
+    });
+  });
+}
+
+// 曲名・アーティスト名からYouTube Data APIで動画を検索する
+async function searchYouTubeVideoId(track){
+  const apiKey = youtubeApiKeyInp.value.trim();
+  if(!apiKey) throw new Error('YouTube Data APIキーが入力されていません');
+  const q = encodeURIComponent(`${track.title} ${track.artist || ''}`.trim());
+  const res = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=1&type=video&videoCategoryId=10&q=${q}&key=${apiKey}`);
+  const data = await res.json();
+  if(!res.ok){
+    throw new Error((data.error && data.error.message) || 'YouTube検索に失敗しました');
+  }
+  const item = data.items && data.items[0];
+  return item ? item.id.videoId : null;
+}
+
+async function playTrackOnYouTube(track){
+  const player = await ensureYouTubePlayer();
+  let videoId = track.youtubeId;
+  if(!videoId){
+    videoId = await searchYouTubeVideoId(track);
+  }
+  if(!videoId){
+    throw new Error(`「${track.title}」に該当する動画が見つかりませんでした`);
+  }
+  track.youtubeId = videoId; // 次回以降は検索せずに済むよう覚えておく
+  player.loadVideoById(videoId);
+}
+
+youtubeConnectBtn.addEventListener('click', async () => {
+  youtubeConnectBtn.disabled = true;
+  try{
+    if(!youtubeApiKeyInp.value.trim()){
+      document.getElementById('youtubeAdvanced').open = true;
+      youtubeApiKeyInp.focus();
+      setSpotifyStatus('YouTube Data APIキーを入れてから、もう一度押してください', 'error');
+      return;
+    }
+    await ensureYouTubePlayer();
+    enableAutoNext();
+    saveState();
+    showToast('YouTube Musicが使えるようになりました');
+  } catch(err){
+    console.error(err);
+    setSpotifyStatus('YouTube Musicの準備に失敗しました: ' + err.message, 'error');
+  } finally {
+    youtubeConnectBtn.disabled = false;
+  }
+});
+
+// --- Apple Music(MusicKit JS) ---
+let appleMusicInstance = null;
+const appleDevTokenInp = document.getElementById('appleDevToken');
+const appleLoginBtn = document.getElementById('appleLoginBtn');
+
+function loadMusicKitJs(){
+  return new Promise((resolve, reject) => {
+    if(window.MusicKit){ resolve(); return; }
+    document.addEventListener('musickitloaded', () => resolve(), { once: true });
+    if(document.getElementById('musickit-script')) return;
+    const tag = document.createElement('script');
+    tag.id = 'musickit-script';
+    tag.src = 'https://js-cdn.music.apple.com/musickit/v3/musickit.js';
+    tag.onerror = () => reject(new Error('MusicKit.jsの読み込みに失敗しました'));
+    document.head.appendChild(tag);
+  });
+}
+
+appleLoginBtn.addEventListener('click', async () => {
+  const devToken = appleDevTokenInp.value.trim();
+  if(!devToken){
+    document.getElementById('appleAdvanced').open = true;
+    appleDevTokenInp.focus();
+    setSpotifyStatus('開発者トークンを入れてから、もう一度押してください', 'error');
+    return;
+  }
+  appleLoginBtn.disabled = true;
+  try{
+    await loadMusicKitJs();
+    appleMusicInstance = window.MusicKit.configure({
+      developerToken: devToken,
+      app: { name: 'Skew', build: '1.0.0' }
+    });
+    await appleMusicInstance.authorize();
+    updateProviderConnectionUI();
+    enableAutoNext();
+    saveState();
+    showToast('Apple Musicに接続しました');
+  } catch(err){
+    console.error(err);
+    setSpotifyStatus('Apple Musicログインに失敗しました: ' + err.message, 'error');
+  } finally {
+    appleLoginBtn.disabled = false;
+  }
+});
+
+// 曲名・アーティスト名からApple Musicカタログを検索する
+async function searchAppleMusicSongId(track){
+  if(!appleMusicInstance) throw new Error('Apple Musicに接続されていません');
+  const storefront = appleMusicInstance.storefrontId || 'us';
+  const term = `${track.title} ${track.artist || ''}`.trim();
+  const result = await appleMusicInstance.api.music(`/v1/catalog/${storefront}/search`, { term, types: 'songs', limit: 1 });
+  const song = result && result.data && result.data.results && result.data.results.songs && result.data.results.songs.data && result.data.results.songs.data[0];
+  return song ? song.id : null;
+}
+
+async function playTrackOnAppleMusic(track){
+  if(!appleMusicInstance || !appleMusicInstance.isAuthorized){
+    throw new Error('Apple Musicに接続されていません');
+  }
+  let songId = track.appleMusicId;
+  if(!songId){
+    songId = await searchAppleMusicSongId(track);
+  }
+  if(!songId){
+    throw new Error(`「${track.title}」に該当する曲が見つかりませんでした`);
+  }
+  track.appleMusicId = songId; // 次回以降は検索せずに済むよう覚えておく
+  await appleMusicInstance.setQueue({ song: songId });
+  await appleMusicInstance.play();
+}
+
+// --- トースト表示 ---
+const toastEl = document.getElementById('toast');
+const toastMsgEl = document.getElementById('toastMsg');
+const toastUndoBtn = document.getElementById('toastUndo');
+let toastTimer = null;
+let toastUndoHandler = null;
+function showToast(msg, opts){
+  opts = opts || {};
+  toastUndoHandler = typeof opts.onUndo === 'function' ? opts.onUndo : null;
+  toastMsgEl.textContent = msg;
+  toastUndoBtn.style.display = (opts.undo || opts.onUndo) ? '' : 'none';
+  toastEl.classList.toggle('error', !!opts.error);
+  toastEl.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove('show'), (opts.undo || opts.onUndo) ? 6000 : 3500);
+}
+toastUndoBtn.addEventListener('click', () => {
+  if(toastUndoHandler){ toastUndoHandler(); toastUndoHandler = null; }
+  else undo();
+  toastEl.classList.remove('show');
+});
+
+// --- 保存していた設定を復元する ---
+if(savedState){
+  if(savedState.colorMode && COLOR_MODE_LABELS[savedState.colorMode]){
+    colorMode = savedState.colorMode;
+    updateColorModeUI();
+  }
+  if(savedState.spotifyClientId) clientIdInp.value = savedState.spotifyClientId;
+  if(savedState.youtubeApiKey) youtubeApiKeyInp.value = savedState.youtubeApiKey;
+  if(savedState.appleDevToken) appleDevTokenInp.value = savedState.appleDevToken;
+  if(savedState.activeProvider && providerPanels[savedState.activeProvider]) setActiveProvider(savedState.activeProvider);
+}
+clientIdInp.addEventListener('input', saveState);
+youtubeApiKeyInp.addEventListener('input', saveState);
+appleDevTokenInp.addEventListener('input', saveState);
+document.querySelectorAll('.provider-tab').forEach(tab => tab.addEventListener('click', saveState));
+document.getElementById('spotifyLogoutBtn').addEventListener('click', spotifyLogout);
+
+// 前回Spotifyにログインしていれば、ボタンを押さなくても自動で接続し直す
+(async () => {
+  if(!loadSpotifyAuth()) return;
+  try{
+    const t = await refreshSpotifyAccessToken();
+    if(t) onSpotifyTokenReceived(t, { silent: true });
+  } catch(err){ console.error(err); }
+})();
+
+// 曲がすでにあるときは「曲を追加」パネルを閉じておき、曲リストを主役にする
+const addPanelEl = document.getElementById('addPanel');
+addPanelEl.open = true;
+
+// ================= 設定画面 =================
+const settingsSheetEl = document.getElementById('settingsSheet');
+const settingsBodyEl = document.getElementById('settingsBody');
+const settingsBtnEl = document.getElementById('settingsBtn');
+
+// 既存の「曲を追加」「再生連携」パネルを設定画面の中へ移す(IDやイベントはそのまま使える)
+document.getElementById('playbackMount').appendChild(document.getElementById('playbackPanel'));
+document.getElementById('playbackPanel').open = true;
+document.getElementById('addMount').appendChild(addPanelEl);
+document.getElementById('addMount').appendChild(spotifyStatusEl);
+
+function openSettings(sectionId){
+  renderPlaylistList();
+  renderAccount();
+  renderProfile();
+  settingsSheetEl.hidden = false;
+  document.documentElement.classList.add('sheet-open');
+  const target = sectionId ? document.getElementById(sectionId) : null;
+  requestAnimationFrame(() => {
+    settingsBodyEl.scrollTop = target ? target.offsetTop - 8 : 0;
+  });
+}
+function closeSettings(){
+  settingsSheetEl.hidden = true;
+  playlistSheetEl.hidden = true;
+  document.documentElement.classList.remove('sheet-open');
+}
+
+// プレイリストの管理は設定画面から外し、上部のプレイリスト名から開く専用の画面にする
+const playlistSheetEl = document.getElementById('playlistSheet');
+document.getElementById('playlistBody').appendChild(document.getElementById('secPlaylists'));
+function openPlaylists(){
+  renderPlaylistList();
+  renderAccount();
+  playlistSheetEl.hidden = false;
+  document.documentElement.classList.add('sheet-open');
+  document.getElementById('playlistBody').scrollTop = 0;
+}
+playlistSheetEl.addEventListener('click', (e) => {
+  if(e.target.closest('[data-close-settings]')) closeSettings();
+});
+settingsBtnEl.addEventListener('click', () => openSettings());
+document.getElementById('playlistSwitchBtn').addEventListener('click', () => openPlaylists());
+settingsSheetEl.addEventListener('click', (e) => {
+  if(e.target.closest('[data-close-settings]')) closeSettings();
+});
+document.addEventListener('click', (e) => {
+  const opener = e.target.closest('[data-open-settings]');
+  if(opener) openSettings(opener.dataset.openSettings);
+});
+document.addEventListener('keydown', (e) => {
+  if(e.key === 'Escape' && (!settingsSheetEl.hidden || !playlistSheetEl.hidden)) closeSettings();
+});
+
+function escapeHtml(str){
+  return String(str == null ? '' : str).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+}
+
+// ---------- アイコン(プロフィール) ----------
+const PROFILE_KEY = 'skew.profile.v1';
+let profile = { name: '', avatar: '' };
+try{ profile = Object.assign(profile, JSON.parse(localStorage.getItem(PROFILE_KEY) || '{}')); } catch(e){}
+function saveProfile(){
+  try{ localStorage.setItem(PROFILE_KEY, JSON.stringify(profile)); }
+  catch(e){ showToast('画像が大きすぎて保存できませんでした', { error: true }); }
+}
+const profileNameInp = document.getElementById('profileName');
+const avatarFileInp = document.getElementById('avatarFile');
+const avatarSpotifyBtn = document.getElementById('avatarSpotifyBtn');
+
+function spotifyImageUrl(){
+  return spotifyProfile && spotifyProfile.images && spotifyProfile.images[0] && spotifyProfile.images[0].url;
+}
+function avatarHtml(){
+  if(profile.avatar) return `<img src="${escapeHtml(profile.avatar)}" alt="">`;
+  const initial = (profile.name || '').trim().charAt(0);
+  return initial ? escapeHtml(initial.toUpperCase()) : '♪';
+}
+function renderProfile(){
+  document.getElementById('profileAvatar').innerHTML = avatarHtml();
+  if(document.activeElement !== profileNameInp) profileNameInp.value = profile.name || '';
+  avatarSpotifyBtn.hidden = !spotifyImageUrl();
+  // ヘッダーの設定ボタン: アイコン画像があれば表示し、歯車は小さなバッジにする
+  const head = document.getElementById('headerAvatar');
+  if(profile.avatar){
+    head.innerHTML = `<img src="${escapeHtml(profile.avatar)}" alt="">`;
+    settingsBtnEl.classList.add('has-avatar');
+  } else {
+    head.innerHTML = '';
+    settingsBtnEl.classList.remove('has-avatar');
+  }
+}
+profileNameInp.addEventListener('input', () => {
+  profile.name = profileNameInp.value;
+  saveProfile();
+  document.getElementById('profileAvatar').innerHTML = avatarHtml();
+});
+// 選んだ画像は正方形に切り抜いて小さく縮めてから保存する(端末の保存容量を圧迫しないように)
+function imageToAvatarDataUrl(src){
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      const size = 192;
+      const c = document.createElement('canvas');
+      c.width = size; c.height = size;
+      const side = Math.min(img.naturalWidth, img.naturalHeight);
+      const sx = (img.naturalWidth - side) / 2, sy = (img.naturalHeight - side) / 2;
+      c.getContext('2d').drawImage(img, sx, sy, side, side, 0, 0, size, size);
+      try{ resolve(c.toDataURL('image/jpeg', 0.85)); } catch(err){ reject(err); }
+    };
+    img.onerror = () => reject(new Error('画像を読み込めませんでした'));
+    img.src = src;
+  });
+}
+avatarFileInp.addEventListener('change', async () => {
+  const file = avatarFileInp.files && avatarFileInp.files[0];
+  if(!file) return;
+  const url = URL.createObjectURL(file);
+  try{
+    profile.avatar = await imageToAvatarDataUrl(url);
+    saveProfile();
+    renderProfile();
+    showToast('アイコンを変更しました');
+  } catch(err){
+    showToast(err.message || 'アイコンを変更できませんでした', { error: true });
+  } finally {
+    URL.revokeObjectURL(url);
+    avatarFileInp.value = '';
+  }
+});
+avatarSpotifyBtn.addEventListener('click', async () => {
+  const spImg = spotifyImageUrl();
+  if(!spImg) return;
+  try{ profile.avatar = await imageToAvatarDataUrl(spImg); }
+  catch(err){ profile.avatar = spImg; } // 変換できない場合はURLのまま使う
+  if(!profile.name && spotifyProfile.display_name) profile.name = spotifyProfile.display_name;
+  saveProfile();
+  renderProfile();
+});
+document.getElementById('avatarRemoveBtn').addEventListener('click', () => {
+  profile.avatar = '';
+  saveProfile();
+  renderProfile();
+});
+
+// ---------- アカウント ----------
+let spotifyProfile = null;
+let spotifyProfileLoading = false;
+async function spotifyGet(path){
+  const res = await fetch('https://api.spotify.com/v1' + path, {
+    headers: { 'Authorization': 'Bearer ' + spotifyAccessToken }
+  });
+  if(!res.ok){
+    const err = new Error(`Spotify API エラー (status ${res.status})`);
+    err.status = res.status;
+    throw err;
+  }
+  return res.json();
+}
+async function renderAccount(){
+  const box = document.getElementById('accountBox');
+  if(!box) return;
+  document.getElementById('spotifyImportBox').style.display = spotifyAccessToken ? '' : 'none';
+  if(!spotifyAccessToken){
+    box.innerHTML = `<div class="acc-empty">Spotifyにログインしていません</div>
+      <button class="btn-spotify" type="button" id="accLoginBtn">ログイン</button>`;
+    document.getElementById('accLoginBtn').addEventListener('click', () => loginBtn.click());
+    renderProfile();
+    return;
+  }
+  if(!spotifyProfile){
+    if(spotifyProfileLoading) return;
+    spotifyProfileLoading = true;
+    box.innerHTML = `<div class="acc-empty">読み込み中…</div>`;
+    try{ spotifyProfile = await spotifyGet('/me'); }
+    catch(err){ spotifyProfile = { display_name: 'Spotifyアカウント' }; }
+    finally{ spotifyProfileLoading = false; }
+  }
+  if(!spotifyAccessToken || !spotifyProfile) return;
+  const img = spotifyImageUrl();
+  const plan = spotifyProfile.product === 'premium' ? 'Premium'
+    : (spotifyProfile.product ? 'Free(再生の操作にはPremiumが必要です)' : '');
+  box.innerHTML = `
+    ${img ? `<img class="acc-img" src="${escapeHtml(img)}" alt="">` : `<div class="acc-img"></div>`}
+    <div class="acc-meta">
+      <div class="acc-name">${escapeHtml(spotifyProfile.display_name || spotifyProfile.id || 'Spotifyアカウント')}</div>
+      <div class="acc-sub">Spotify${plan ? ' · ' + escapeHtml(plan) : ''}</div>
+    </div>
+    <button class="btn-copy" type="button" id="accLogoutBtn">ログアウト</button>`;
+  document.getElementById('accLogoutBtn').addEventListener('click', spotifyLogout);
+  renderProfile();
+}
+
+// ---------- プレイリスト ----------
+const playlistListEl = document.getElementById('playlistList');
+let pendingDeleteId = null;
+let renamingId = null;
+
+function updatePlaylistUI(){
+  const pl = currentPlaylist();
+  document.getElementById('currentPlaylistName').textContent = pl ? pl.name : '';
+  document.getElementById('addTargetName').textContent = pl ? pl.name : '';
+}
+
+function switchPlaylist(id){
+  if(id === currentPlaylistId) return;
+  syncCurrentPlaylist();
+  const target = playlists.find(pl => pl.id === id);
+  if(!target) return;
+  currentPlaylistId = id;
+  tracks = (target.tracks || []).filter(isValidTrack);
+  undoStack = []; redoStack = [];
+  clearSelection();
+  playHistory = []; historyIndex = -1;
+  searchQuery = ''; searchInputEl.value = '';
+  render();
+  updatePlaylistUI();
+  renderPlaylistList();
+  saveState();
+}
+
+function createPlaylist(name, initialTracks){
+  syncCurrentPlaylist();
+  const pl = { id: 'pl' + Date.now() + Math.floor(Math.random() * 1000), name: name, tracks: initialTracks || [] };
+  playlists.push(pl);
+  switchPlaylist(pl.id);
+  return pl;
+}
+
+function deletePlaylist(id){
+  if(playlists.length <= 1){
+    showToast('最後のプレイリストは削除できません', { error: true });
+    return;
+  }
+  syncCurrentPlaylist();
+  const idx = playlists.findIndex(pl => pl.id === id);
+  if(idx === -1) return;
+  const [removed] = playlists.splice(idx, 1);
+  const wasCurrent = id === currentPlaylistId;
+  if(wasCurrent){
+    currentPlaylistId = null;
+    switchPlaylist(playlists[Math.max(0, idx - 1)].id);
+  } else {
+    renderPlaylistList();
+    saveState();
+  }
+  showToast(`「${removed.name}」を削除しました`, { onUndo: () => {
+    playlists.splice(idx, 0, removed);
+    if(wasCurrent) switchPlaylist(removed.id);
+    else { renderPlaylistList(); saveState(); }
+  }});
+}
+
+function renderPlaylistList(){
+  syncCurrentPlaylist();
+  playlistListEl.innerHTML = playlists.map(pl => {
+    const count = (pl.tracks || []).length;
+    const isCur = pl.id === currentPlaylistId;
+    if(renamingId === pl.id){
+      return `<div class="pl-row ${isCur ? 'current' : ''}" data-pl="${pl.id}">
+        <input class="pl-rename" value="${escapeHtml(pl.name)}" maxlength="40" data-rename-input>
+        <button class="pl-icon" type="button" data-act="rename-ok" title="決定" aria-label="決定"><span class="ic" aria-hidden="true">&#xe5ca;</span></button>
+      </div>`;
+    }
+    return `<div class="pl-row ${isCur ? 'current' : ''}" data-pl="${pl.id}">
+      <button class="pl-main" type="button" data-act="switch">
+        <span class="pl-name">${escapeHtml(pl.name)}</span><small>${count}曲${isCur ? ' · 表示中' : ''}</small>
+      </button>
+      <button class="pl-icon" type="button" data-act="rename" title="名前を変更" aria-label="名前を変更"><span class="ic" aria-hidden="true">&#xe150;</span></button>
+      ${pendingDeleteId === pl.id
+        ? '<button class="pl-icon confirm" type="button" data-act="delete-ok">削除する</button>'
+        : '<button class="pl-icon danger" type="button" data-act="delete" title="削除" aria-label="削除"><span class="ic" aria-hidden="true">&#xe872;</span></button>'}
+    </div>`;
+  }).join('');
+  updatePlaylistUI();
+  const ri = playlistListEl.querySelector('[data-rename-input]');
+  if(ri){ ri.focus(); ri.select(); }
+}
+
+function commitRename(){
+  const ri = playlistListEl.querySelector('[data-rename-input]');
+  const pl = playlists.find(p => p.id === renamingId);
+  if(ri && pl){
+    const name = ri.value.trim();
+    if(name) pl.name = name;
+  }
+  renamingId = null;
+  renderPlaylistList();
+  saveState();
+}
+
+playlistListEl.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-act]');
+  if(!btn) return;
+  const id = btn.closest('[data-pl]').dataset.pl;
+  const act = btn.dataset.act;
+  if(act !== 'delete-ok') pendingDeleteId = null;
+  if(act === 'switch'){
+    if(id !== currentPlaylistId){ switchPlaylist(id); showToast(`「${currentPlaylist().name}」に切り替えました`); }
+    closeSettings();
+  }
+  else if(act === 'rename'){ renamingId = id; renderPlaylistList(); }
+  else if(act === 'rename-ok'){ commitRename(); }
+  else if(act === 'delete'){ pendingDeleteId = id; renderPlaylistList(); } // 押し間違い防止のため2回押しで削除
+  else if(act === 'delete-ok'){ pendingDeleteId = null; deletePlaylist(id); }
+});
+playlistListEl.addEventListener('keydown', (e) => {
+  if(!e.target.matches('[data-rename-input]')) return;
+  if(e.key === 'Enter'){ e.preventDefault(); commitRename(); }
+  if(e.key === 'Escape'){ e.stopPropagation(); renamingId = null; renderPlaylistList(); }
+});
+
+const newPlaylistNameInp = document.getElementById('newPlaylistName');
+function createFromInput(){
+  const name = newPlaylistNameInp.value.trim() || `プレイリスト ${playlists.length + 1}`;
+  createPlaylist(name);
+  newPlaylistNameInp.value = '';
+  showToast(`「${name}」を作りました`);
+}
+document.getElementById('newPlaylistBtn').addEventListener('click', createFromInput);
+newPlaylistNameInp.addEventListener('keydown', (e) => { if(e.key === 'Enter'){ e.preventDefault(); createFromInput(); } });
+
+// ---------- Spotifyのプレイリストを読み込む ----------
+const spotifyPlaylistListEl = document.getElementById('spotifyPlaylistList');
+const loadSpotifyPlaylistsBtn = document.getElementById('loadSpotifyPlaylistsBtn');
+function needsRelogin(err){ return err && (err.status === 401 || err.status === 403); }
+function showReloginHint(){
+  spotifyPlaylistListEl.innerHTML = `<p class="pb-hint">プレイリストを読むための許可がまだありません。もう一度ログインしてください。</p>
+    <button class="btn-spotify btn-connect" type="button" id="reloginBtn">もう一度ログインする</button>`;
+  document.getElementById('reloginBtn').addEventListener('click', () => { spotifyLogout(); loginBtn.click(); });
+}
+const LIKED_ID = '__liked__';
+function apiPath(url){ return url ? url.replace('https://api.spotify.com/v1', '') : null; }
+loadSpotifyPlaylistsBtn.addEventListener('click', async () => {
+  if(!spotifyAccessToken) return;
+  loadSpotifyPlaylistsBtn.disabled = true;
+  spotifyPlaylistListEl.innerHTML = '<p class="pb-hint">読み込み中…</p>';
+  try{
+    let items = [];
+    let next = '/me/playlists?limit=50';
+    while(next && items.length < 200){
+      const data = await spotifyGet(next);
+      items = items.concat((data.items || []).filter(Boolean));
+      next = apiPath(data.next);
+    }
+    // 「お気に入りの曲」(マイライブラリのLiked Songs)を先頭に追加
+    let likedTotal = null, likedErr = null;
+    try{ likedTotal = (await spotifyGet('/me/tracks?limit=1')).total || 0; } catch(e){ likedErr = e; }
+    const likedHtml = likedErr
+      ? `<div class="pl-row sp"><div class="pl-main"><span class="pl-name">♥ お気に入りの曲</span><small>${needsRelogin(likedErr) ? '許可が足りません。下のボタンでログインし直してください' : '読み込めませんでした: ' + escapeHtml(likedErr.message)}</small></div></div>
+         ${needsRelogin(likedErr) ? '<button class="btn-spotify btn-connect" type="button" id="reloginBtn2">もう一度ログインする</button>' : ''}`
+      : `<div class="pl-row sp" data-sp="${LIKED_ID}" data-name="お気に入りの曲">
+        <div class="pl-main"><span class="pl-name">♥ お気に入りの曲</span><small>${likedTotal}曲</small></div>
+        <button class="btn-copy" type="button" data-import>読み込む</button>
+      </div>`;
+    spotifyPlaylistListEl.innerHTML = likedHtml + items.map(pl => {
+      const img = pl.images && pl.images.length ? pl.images[pl.images.length - 1].url : '';
+      const total = (pl.tracks && pl.tracks.total) || (pl.items && pl.items.total) || 0;
+      return `<div class="pl-row sp" data-sp="${escapeHtml(pl.id)}" data-name="${escapeHtml(pl.name)}">
+        ${img ? `<img src="${escapeHtml(img)}" alt="">` : ''}
+        <div class="pl-main"><span class="pl-name">${escapeHtml(pl.name)}</span><small>${total}曲</small></div>
+        <button class="btn-copy" type="button" data-import>読み込む</button>
+      </div>`;
+    }).join('');
+    const rb2 = document.getElementById('reloginBtn2');
+    if(rb2) rb2.addEventListener('click', () => { spotifyLogout(); loginBtn.click(); });
+  } catch(err){
+    console.error(err);
+    if(needsRelogin(err)) showReloginHint();
+    else spotifyPlaylistListEl.innerHTML = `<p class="pb-hint">読み込めませんでした: ${escapeHtml(err.message)}</p>`;
+  } finally {
+    loadSpotifyPlaylistsBtn.disabled = false;
+  }
+});
+spotifyPlaylistListEl.addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-import]');
+  if(!btn) return;
+  const row = btn.closest('[data-sp]');
+  const spId = row.dataset.sp;
+  const name = row.dataset.name;
+  btn.disabled = true;
+  btn.textContent = '読み込み中…';
+  try{
+    const found = [];
+    let next = spId === LIKED_ID ? '/me/tracks?limit=50' : `/playlists/${encodeURIComponent(spId)}/items?limit=100`;
+    while(next){
+      const data = await spotifyGet(next);
+      (data.items || []).forEach(it => {
+        const tr = it && (it.track || it.item);
+        if(tr && tr.id && tr.type !== 'episode'){
+          found.push({ title: tr.name, artist: (tr.artists || []).map(a => a.name).join(', '), spotifyId: tr.id });
+        }
+      });
+      next = apiPath(data.next);
+    }
+    if(found.length === 0) throw new Error('曲が見つかりませんでした');
+    const newTracks = found.map((t, i) => ({
+      id: i + 1, title: t.title, artist: t.artist, weight: 50, spotifyId: t.spotifyId, addedAt: nextAddedAt()
+    }));
+    createPlaylist(name, newTracks);
+    btn.textContent = '読み込み済み';
+    showToast(`「${name}」(${newTracks.length}曲)を読み込みました`);
+  } catch(err){
+    console.error(err);
+    btn.disabled = false;
+    btn.textContent = '読み込む';
+    if(needsRelogin(err)) showReloginHint();
+    else showToast('読み込めませんでした: ' + err.message, { error: true });
+  }
+});
+
+updatePlaylistUI();
+renderProfile();
+renderAccount();
+
+document.addEventListener('selectstart', (e) => {
+  if(!e.target.closest || !e.target.closest('input, textarea')) e.preventDefault();
+});
+
+// ---------- 曲の右クリック(二本指クリック)/長押しメニュー ----------
+const LIKE_SCOPE_HINT = 'Spotifyの許可が足りません。ログアウトしてもう一度ログインしてください';
+let ctxMenuEl = null, ctxSubEl = null;
+function closeCtxMenu(){
+  if(ctxMenuEl){ ctxMenuEl.remove(); ctxMenuEl = null; }
+  if(ctxSubEl){ ctxSubEl.remove(); ctxSubEl = null; }
+}
+async function spotifyReq(method, path){
+  const res = await fetch('https://api.spotify.com/v1' + path, {
+    method, headers: { 'Authorization': 'Bearer ' + spotifyAccessToken }
+  });
+  if(!res.ok){
+    const err = new Error(`Spotify API エラー (status ${res.status})`);
+    err.status = res.status;
+    throw err;
+  }
+  return res;
+}
+function placeFloating(el, x, y){
+  el.style.left = '0px'; el.style.top = '0px';
+  const r = el.getBoundingClientRect();
+  const nx = Math.max(8, Math.min(x, window.innerWidth - r.width - 8));
+  const ny = Math.max(8, Math.min(y, window.innerHeight - r.height - 8));
+  el.style.left = nx + 'px'; el.style.top = ny + 'px';
+}
+function openTrackMenu(trackId, x, y){
+  closeCtxMenu();
+  const t = tracks.find(tt => tt.id === trackId);
+  if(!t) return;
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+  const items = [];
+  const add = (key, icon, label, opts) => {
+    opts = opts || {};
+    const d = document.createElement('div');
+    d.className = 'ctx-item' + (opts.disabled ? ' disabled' : '');
+    d.dataset.key = key;
+    d.innerHTML = `<span class="ctx-ic">${icon}</span><span class="ctx-label">${escapeHtml(label)}</span>${opts.sub ? '<span class="ctx-arrow">▸</span>' : ''}`;
+    menu.appendChild(d);
+    items.push(d);
+    return d;
+  };
+  const others = playlists.filter(pl => pl.id !== currentPlaylistId);
+  const addPl = add('addpl', '＋', 'プレイリストに追加', { sub: true, disabled: others.length === 0 });
+  const likeItem = add('like', '♥', 'お気に入りの曲を確認中…', { disabled: true });
+  add('queue', '☰', '[次に再生]に追加', { disabled: !spotifyAccessToken });
+  const sep = document.createElement('div'); sep.className = 'ctx-sep'; menu.appendChild(sep);
+  add('remove', '✕', 'このプレイリストから削除');
+  document.body.appendChild(menu);
+  ctxMenuEl = menu;
+  placeFloating(menu, x, y);
+
+  // 「プレイリストに追加」のサブメニュー
+  const showSub = () => {
+    if(ctxSubEl){ ctxSubEl.remove(); ctxSubEl = null; }
+    if(others.length === 0) return;
+    const sub = document.createElement('div');
+    sub.className = 'ctx-sub';
+    others.forEach(pl => {
+      const d = document.createElement('div');
+      d.className = 'ctx-item';
+      d.dataset.pl = pl.id;
+      d.innerHTML = `<span class="ctx-label">${escapeHtml(pl.name)}</span>`;
+      sub.appendChild(d);
+    });
+    document.body.appendChild(sub);
+    ctxSubEl = sub;
+    const r = addPl.getBoundingClientRect();
+    placeFloating(sub, r.right + 4, r.top);
+    if(parseFloat(sub.style.left) < r.right){ placeFloating(sub, r.left - sub.offsetWidth - 4, r.top); }
+    addPl.classList.add('open');
+  };
+  addPl.addEventListener('mouseenter', showSub);
+  addPl.addEventListener('click', showSub);
+  items.forEach(it => { if(it !== addPl) it.addEventListener('mouseenter', () => {
+    if(ctxSubEl){ ctxSubEl.remove(); ctxSubEl = null; addPl.classList.remove('open'); }
+  }); });
+
+  // お気に入りの状態を調べる
+  let liked = false;
+  if(spotifyAccessToken && t.spotifyId){
+    spotifyGet('/me/library/contains?uris=' + encodeURIComponent('spotify:track:' + t.spotifyId)).then(arr => {
+      if(!ctxMenuEl) return;
+      liked = !!(arr && arr[0]);
+      likeItem.querySelector('.ctx-label').textContent = liked ? '「お気に入りの曲」から削除します' : '「お気に入りの曲」に追加';
+      likeItem.classList.remove('disabled');
+    }).catch(() => {
+      if(!ctxMenuEl) return;
+      likeItem.querySelector('.ctx-label').textContent = 'お気に入りの曲(要ログイン)';
+    });
+  } else {
+    likeItem.querySelector('.ctx-label').textContent = '「お気に入りの曲」に追加';
+  }
+
+  const onClick = async (e) => {
+    const subItem = e.target.closest('.ctx-sub .ctx-item');
+    const item = e.target.closest('.ctx-menu .ctx-item');
+    if(subItem){
+      const pl = playlists.find(p => p.id === subItem.dataset.pl);
+      closeCtxMenu();
+      if(!pl) return;
+      const maxId = pl.tracks.reduce((m, tt) => Math.max(m, tt.id || 0), 0);
+      pl.tracks.push({ id: maxId + 1, title: t.title, artist: t.artist, weight: t.weight, spotifyId: t.spotifyId || null, addedAt: nextAddedAt() });
+      saveState();
+      showToast(`「${pl.name}」に追加しました`);
+      return;
+    }
+    if(!item || item.classList.contains('disabled')) return;
+    const key = item.dataset.key;
+    if(key === 'addpl') return;
+    closeCtxMenu();
+    try{
+      if(key === 'like'){
+        if(!spotifyAccessToken){ showToast('Spotifyにログインしてください', { error: true }); return; }
+        if(!t.spotifyId){ showToast('この曲はSpotifyの曲として登録されていません', { error: true }); return; }
+        await spotifyReq(liked ? 'DELETE' : 'PUT', '/me/library?uris=' + encodeURIComponent('spotify:track:' + t.spotifyId));
+        showToast(liked ? '「お気に入りの曲」から削除しました' : '「お気に入りの曲」に追加しました');
+      } else if(key === 'queue'){
+        if(!t.spotifyId){ showToast('この曲はSpotifyの曲として登録されていません', { error: true }); return; }
+        await spotifyReq('POST', '/me/player/queue?uri=' + encodeURIComponent('spotify:track:' + t.spotifyId));
+        showToast('[次に再生]に追加しました');
+      } else if(key === 'remove'){
+        const btn = consoleEl.querySelector(`.track-remove[data-id="${t.id}"]`);
+        if(btn) btn.click();
+      }
+    } catch(err){
+      console.error(err);
+      if(err.status === 401 || err.status === 403) showToast(LIKE_SCOPE_HINT, { error: true });
+      else if(err.status === 404) showToast('再生できるデバイスがありません。Spotifyを開いてください', { error: true });
+      else showToast('失敗しました: ' + err.message, { error: true });
+    }
+  };
+  menu.addEventListener('click', onClick);
+  menu.addEventListener('contextmenu', (e) => e.preventDefault());
+  const subClick = (e) => { if(ctxSubEl && ctxSubEl.contains(e.target)) onClick(e); };
+  document.addEventListener('click', subClick, true);
+  menu._cleanup = () => document.removeEventListener('click', subClick, true);
+}
+const _origClose = closeCtxMenu;
+document.addEventListener('mousedown', (e) => {
+  if(ctxMenuEl && !ctxMenuEl.contains(e.target) && !(ctxSubEl && ctxSubEl.contains(e.target))) closeCtxMenu();
+});
+document.addEventListener('keydown', (e) => { if(e.key === 'Escape') closeCtxMenu(); });
+window.addEventListener('blur', closeCtxMenu);
+window.addEventListener('resize', closeCtxMenu);
+document.addEventListener('scroll', closeCtxMenu, true);
+document.addEventListener('contextmenu', (e) => {
+  if(e.target.closest('input, textarea')) return;
+  e.preventDefault();
+  const row = e.target.closest('.channel');
+  if(row && row.dataset.id) openTrackMenu(Number(row.dataset.id), e.clientX, e.clientY);
+  else closeCtxMenu();
+});
+// タッチ端末(iPhoneなど)では長押しで同じメニューを出す
+(function(){
+  let timer = null, sx = 0, sy = 0;
+  document.addEventListener('touchstart', (e) => {
+    const row = e.target.closest && e.target.closest('.channel');
+    if(!row || e.target.closest('input, button, .drag-handle') || e.touches.length !== 1) return;
+    sx = e.touches[0].clientX; sy = e.touches[0].clientY;
+    clearTimeout(timer);
+    timer = setTimeout(() => { suppressRowClickUntil = Date.now() + 900; openTrackMenu(Number(row.dataset.id), sx, sy); }, 550);
+  }, { passive: true });
+  const cancel = () => clearTimeout(timer);
+  document.addEventListener('touchmove', (e) => {
+    const t = e.touches[0];
+    if(Math.abs(t.clientX - sx) > 10 || Math.abs(t.clientY - sy) > 10) cancel();
+  }, { passive: true });
+  document.addEventListener('touchend', cancel);
+  document.addEventListener('touchcancel', cancel);
+})();
+
+
+// 固定ヘッダーの高さを測って、その下に検索/並び替えバーを固定する
+function updateHeaderHeight(){
+  const h = document.querySelector('.header');
+  const s = document.querySelector('.sort-bar');
+  const root = document.documentElement.style;
+  if(h) root.setProperty('--hdr-h', h.offsetHeight + 'px');
+  if(s) root.setProperty('--bar-h', s.offsetHeight + 'px');
+}
+window.addEventListener('resize', updateHeaderHeight);
+window.addEventListener('load', updateHeaderHeight);
+if(document.fonts && document.fonts.ready) document.fonts.ready.then(updateHeaderHeight);
+updateHeaderHeight();
+
+
+// ---------- 診断: 再生できない原因をまとめて表示する ----------
+document.getElementById('diagBtn').addEventListener('click', async () => {
+  const lines = [];
+  const add = (s) => lines.push(s);
+  add('アプリ: ' + (isNativePlatform() ? 'ネイティブ(iOS/Mac)' : 'Web') + ' / 再生サービス: ' + activeProvider);
+  add('Redirect URI: ' + (redirectUriInp ? redirectUriInp.value : '?'));
+  add('Spotifyログイン: ' + (spotifyAccessToken ? 'OK' : '未ログイン'));
+  let auth = null; try{ auth = loadSpotifyAuth(); }catch(e){}
+  add('許可(scope): ' + ((auth && auth.scope) || '(不明)'));
+  if(spotifyAccessToken){
+    const call = async (label, path) => {
+      try{
+        const r = await fetch('https://api.spotify.com/v1' + path, { headers: { 'Authorization': 'Bearer ' + spotifyAccessToken } });
+        let body = '';
+        if(r.status !== 204){ try{ body = await r.text(); }catch(e){} }
+        add(label + ': status ' + r.status);
+        return { status: r.status, body };
+      } catch(e){ add(label + ': 通信エラー ' + e.message); return null; }
+    };
+    const me = await call('プロフィール(/me)', '/me');
+    if(me && me.status === 200){ try{ const j = JSON.parse(me.body); add('  プラン: ' + (j.product || '(Spotifyの仕様変更で取得不可)') + ' ※アプリ所有者のSpotify Premiumが必要です'); }catch(e){} }
+    else if(me){ add('  ' + me.body.slice(0, 160)); }
+    const dev = await call('再生端末(/me/player/devices)', '/me/player/devices');
+    if(dev && dev.status === 200){
+      try{ const j = JSON.parse(dev.body); add('  端末数: ' + (j.devices||[]).length); (j.devices||[]).forEach(d => add('  - ' + d.name + ' [' + d.type + ']' + (d.is_active ? ' (再生中)' : '') + (d.is_restricted ? ' (制限あり)' : ''))); }catch(e){}
+    } else if(dev){ add('  ' + dev.body.slice(0, 160)); }
+    const st = await call('再生状態(/me/player)', '/me/player');
+    if(st && st.status === 200){ try{ const j = JSON.parse(st.body); add('  再生中: ' + (j.is_playing ? 'はい' : 'いいえ') + ' / ' + (j.item ? j.item.name : 'なし') + ' / 端末: ' + (j.device ? j.device.name : '不明')); }catch(e){} }
+    else if(st && st.status === 204){ add('  再生状態なし(Spotifyが何も再生していない)'); }
+
+    // 選択中(なければ先頭)の曲で、実際に再生テストをする
+    const testTrack = tracks.find(t => selectedTrackIds.has(t.id)) || tracks[0];
+    if(testTrack){
+      add('--- 再生テスト ---');
+      add('曲: ' + testTrack.title + ' / spotifyId: ' + (testTrack.spotifyId || '(なし)'));
+      let sid = testTrack.spotifyId;
+      if(!sid){ try{ sid = await searchSpotifyTrackUri(testTrack); add('  検索で見つかったID: ' + sid); }catch(e){ add('  検索エラー: ' + e.message); } }
+      if(sid){
+        const tr = await call('曲情報(/tracks/id)', '/tracks/' + encodeURIComponent(sid));
+        if(tr && tr.status === 200){ try{ const j = JSON.parse(tr.body); add('  名前: ' + j.name + ' / is_playable: ' + j.is_playable + ' / restrictions: ' + JSON.stringify(j.restrictions || null)); }catch(e){} }
+        else if(tr){ add('  ' + tr.body.slice(0, 200)); }
+        try{
+          const r = await fetch('https://api.spotify.com/v1/me/player/play', {
+            method: 'PUT',
+            headers: { 'Authorization': 'Bearer ' + spotifyAccessToken, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ uris: ['spotify:track:' + sid] })
+          });
+          let b = ''; try{ b = await r.text(); }catch(e){}
+          add('再生命令(PUT /me/player/play): status ' + r.status + (b ? ' ' + b.slice(0, 200) : ''));
+        }catch(e){ add('再生命令: 通信エラー ' + e.message); }
+        for(const wait of [1500, 3000]){
+          await new Promise(res => setTimeout(res, wait));
+          const s2 = await call('再生状態(' + wait + 'ms後)', '/me/player');
+          if(s2 && s2.status === 200){ try{ const j = JSON.parse(s2.body); add('  再生中: ' + (j.is_playing ? 'はい' : 'いいえ') + ' / 曲: ' + (j.item ? j.item.name + ' (' + j.item.id + ')' : 'なし') + ' / 端末: ' + (j.device ? j.device.name + (j.device.is_restricted ? ' 制限あり' : '') + ' 音量' + j.device.volume_percent : '?') + (j.actions && j.actions.disallows ? ' / 禁止操作: ' + JSON.stringify(j.actions.disallows) : '')); }catch(e){} }
+        }
+      }
+    }
+  }
+  const el = document.createElement('div');
+  el.style.cssText = 'position:fixed;inset:0;z-index:200;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;padding:16px';
+  el.innerHTML = '<div style="background:#1d1d1d;border:1px solid #444;border-radius:12px;max-width:560px;width:100%;max-height:80vh;overflow:auto;padding:16px;color:#eee;font-size:0.8rem;line-height:1.6"><div style="font-weight:700;margin-bottom:8px">診断結果(スクリーンショットで共有できます)</div><pre style="white-space:pre-wrap;word-break:break-all;margin:0;-webkit-user-select:text;user-select:text"></pre><button type="button" style="margin-top:12px;padding:10px 16px;border-radius:8px;border:0;background:#ff3972;color:#fff;font-weight:700">閉じる</button></div>';
+  el.querySelector('pre').textContent = lines.join('\n');
+  el.querySelector('button').addEventListener('click', () => el.remove());
+  document.body.appendChild(el);
+});
+
+// ---------- 再生バーのドラッグ/クリックで再生位置を変える ----------
+window.skewSeeking = false;
+function parseClockToMs(text){
+  const parts = String(text || '').trim().split(':').map(n => parseInt(n, 10));
+  if(parts.some(n => isNaN(n))) return 0;
+  return parts.reduce((acc, n) => acc * 60 + n, 0) * 1000;
+}
+async function seekActivePlayback(ms){
+  ms = Math.max(0, Math.round(ms));
+  try{
+    if(activeProvider === 'spotify'){
+      if(!spotifyAccessToken) return;
+      const sdkId = (typeof skewSpotifyDeviceId !== 'undefined') ? skewSpotifyDeviceId : null;
+      const dev = sdkId || deviceSelectEl.value;
+      const q = `position_ms=${ms}` + (dev ? `&device_id=${encodeURIComponent(dev)}` : '');
+      const res = await fetch(`https://api.spotify.com/v1/me/player/seek?${q}`, {
+        method: 'PUT', headers: { 'Authorization': 'Bearer ' + spotifyAccessToken }
+      });
+      if(!res.ok && res.status !== 204){
+        const t = await res.text().catch(() => '');
+        throw new Error(`status ${res.status} ${t.slice(0, 100)}`);
+      }
+    } else if(activeProvider === 'youtube' && ytPlayer && ytPlayerReady){
+      ytPlayer.seekTo(ms / 1000, true);
+    } else if(activeProvider === 'apple' && appleMusicInstance){
+      await appleMusicInstance.seekToTime(ms / 1000);
+    }
+  } catch(err){
+    console.error(err);
+    showToast('再生位置を変更できませんでした: ' + err.message, { error: true });
+  }
+}
+(function(){
+  const bar = document.querySelector('.progress-bar');
+  if(!bar) return;
+  let dragging = false;
+  let targetMs = 0;
+  const update = (clientX) => {
+    const total = parseClockToMs(progressTotalEl.textContent);
+    const r = bar.getBoundingClientRect();
+    const ratio = Math.min(1, Math.max(0, (clientX - r.left) / (r.width || 1)));
+    progressFillEl.style.width = (ratio * 100) + '%';
+    targetMs = ratio * total;
+    if(total > 0) progressElapsedEl.textContent = formatMs(targetMs);
+    return total;
+  };
+  bar.addEventListener('pointerdown', (e) => {
+    if(e.button !== undefined && e.button !== 0) return;
+    if(parseClockToMs(progressTotalEl.textContent) <= 0) return; // 曲の長さが分からないときは何もしない
+    e.preventDefault();
+    dragging = true;
+    window.skewSeeking = true;
+    bar.classList.add('seeking');
+    try{ bar.setPointerCapture(e.pointerId); }catch(err){}
+    update(e.clientX);
+  });
+  bar.addEventListener('pointermove', (e) => { if(dragging) update(e.clientX); });
+  const finish = async (e) => {
+    if(!dragging) return;
+    dragging = false;
+    bar.classList.remove('seeking');
+    if(e && e.clientX !== undefined && e.type === 'pointerup') update(e.clientX);
+    await seekActivePlayback(targetMs);
+    // Spotify側の反映を少し待ってから、通常の進捗表示に戻す
+    setTimeout(() => { window.skewSeeking = false; }, 1200);
+  };
+  bar.addEventListener('pointerup', finish);
+  bar.addEventListener('pointercancel', finish);
+})();
+
+// ---------- Spotify APIの使いすぎ(429 Too many requests)対策 ----------
+// Spotifyから429が返ったら、指定された秒数(Retry-After)のあいだSpotify APIへのアクセスを止める。
+// 待っている間の呼び出しは通信せずに429扱いで返すので、制限がさらに延びるのを防げる。
+// 待ち時間はページを開き直しても引き継ぐ(再読み込みで制限がさらに延びるのを防ぐ)
+var spotifyBackoffUntil = 0;
+var spotifyBackoffNotified = false;
+var spotifyBackoffStreak = 0;
+try{ spotifyBackoffUntil = Number(localStorage.getItem('skew.spotify.backoffUntil') || 0); }catch(e){}
+(function(){
+  const origFetch = window.fetch.bind(window);
+  window.fetch = async function(input, init){
+    const url = typeof input === 'string' ? input : (input && input.url) || '';
+    if(!url.startsWith('https://api.spotify.com/')) return origFetch(input, init);
+    if(Date.now() < spotifyBackoffUntil){
+      return new Response(JSON.stringify({ error: { status: 429, message: 'Skewが待機中です' } }), { status: 429, headers: { 'Content-Type': 'application/json' } });
+    }
+    const res = await origFetch(input, init);
+    if(res.status === 429){
+      const ra = parseInt(res.headers.get('Retry-After') || '', 10);
+      // Retry-Afterが読めないときは、続けて制限されるたびに待ち時間を倍にする(60秒→2分→4分…最大30分)
+      spotifyBackoffStreak += 1;
+      const fallback = Math.min(60 * Math.pow(2, spotifyBackoffStreak - 1), 1800);
+      const waitSec = isNaN(ra) ? fallback : Math.min(Math.max(ra, 5), 3600);
+      spotifyBackoffUntil = Date.now() + waitSec * 1000;
+      try{ localStorage.setItem('skew.spotify.backoffUntil', String(spotifyBackoffUntil)); }catch(e){}
+      if(!spotifyBackoffNotified){
+        spotifyBackoffNotified = true;
+        const waitText = waitSec >= 120 ? `${Math.round(waitSec / 60)}分` : `${waitSec}秒`;
+        setSpotifyStatus(`Spotifyへのアクセスが多すぎるため、${waitText}ほど待ってから自動で再開します。Skewを複数のタブ・アプリで同時に開いている場合は1つにしてください`, '');
+        setTimeout(() => { spotifyBackoffNotified = false; }, waitSec * 1000);
+      }
+    }
+    else if(res.ok) spotifyBackoffStreak = 0;
+    return res;
+  };
+})();
+// 画面に出ている経過時間を1秒ごとに手元で進める(Spotifyへの問い合わせ回数を減らすため)
+setInterval(() => {
+  if(!isPlaying || window.skewSeeking || document.hidden) return;
+  const total = parseClockToMs(progressTotalEl.textContent);
+  if(total <= 0) return;
+  const next = Math.min(total, parseClockToMs(progressElapsedEl.textContent) + 1000);
+  progressElapsedEl.textContent = formatMs(next);
+  progressFillEl.style.width = `${Math.min(100, (next / total) * 100)}%`;
+}, 1000);
+
+// ---------- Spotifyアプリ(Mac/スマホのSpotify)で再生する ----------
+// 再生先はSpotifyアプリ。見つからないときはSpotifyアプリを自動で起動して、端末一覧に出てくるのを待つ。
+var lastSpotifyDevices = null;
+
+
+// このタブのままSpotifyログインから戻ってきたときの処理
+(async function(){
+  const pending = window.__skewPendingSpotifyCode;
+  if(!pending) return;
+  try{ history.replaceState(null, '', location.pathname); }catch(e){}
+  try{
+    const redirectUri = location.href.split('#')[0].split('?')[0].replace(/index\.html$/, '');
+    const verifier = pending.state ? pending.state.split('::')[0] : null;
+    const clientId = pending.state ? pending.state.split('::')[1] : null;
+    const token = await exchangeCodeForToken(pending.code, verifier, clientId, redirectUri);
+    onSpotifyTokenReceived(token);
+  } catch(err){
+    console.error(err);
+    setSpotifyStatus('Spotify連携でエラーが発生しました: ' + err.message, 'error');
+  }
+})();
+
+// ---------- 再生中の曲の表示をクリック → リストのその曲までスクロール ----------
+(function(){
+  const box = document.querySelector('.now-playing');
+  if(!box) return;
+  function findCurrentTrack(){
+    const h = (typeof playHistory !== 'undefined' && historyIndex >= 0) ? playHistory[historyIndex] : null;
+    const sid = (typeof currentPlayingSpotifyId !== 'undefined') ? currentPlayingSpotifyId : null;
+    if(h){
+      const byId = tracks.find(t => t.id === h.id && t.title === h.title);
+      if(byId) return byId;
+    }
+    if(sid){
+      const bySid = tracks.find(t => t.spotifyId === sid);
+      if(bySid) return bySid;
+    }
+    const title = (nowTitleEl.textContent || '').trim();
+    return title ? tracks.find(t => t.title === title) : null;
+  }
+  box.addEventListener('click', (e) => {
+    if(e.target.closest('.progress-row, button, input, a')) return; // 再生バーやボタンの操作は対象外
+    const t = findCurrentTrack();
+    if(!t){
+      if((nowTitleEl.textContent || '').trim()) showToast('再生中の曲はこのプレイリストにありません');
+      return;
+    }
+    let row = consoleEl.querySelector(`.channel[data-id="${t.id}"]`);
+    if(!row && searchQuery){
+      // 検索で隠れているときは検索を解除してから移動する
+      searchInputEl.value = '';
+      searchQuery = '';
+      render();
+      row = consoleEl.querySelector(`.channel[data-id="${t.id}"]`);
+    }
+    if(!row) return;
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    selectSingle(t.id);
+    row.classList.remove('jump-flash');
+    void row.offsetWidth;
+    row.classList.add('jump-flash');
+    setTimeout(() => row.classList.remove('jump-flash'), 1600);
+  });
+})();
+
+render();
+
+
+// PWA(アプリとしてインストール可能)対応: サービスワーカーを登録する
+// (http(s)で配信されている場合のみ有効。file://で開いている場合は登録をスキップする)
+if('serviceWorker' in navigator && location.protocol.startsWith('http')){
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch((err) => {
+      console.error('Service worker registration failed:', err);
+    });
+  });
+}
+</script>
+</body>
+</html>
