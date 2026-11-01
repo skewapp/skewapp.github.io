@@ -3164,32 +3164,27 @@ window.addEventListener('message', (event) => {
 // ログイン後に正式なWeb APIで曲名・アーティスト名を取得し直して補完する
 async function refreshTrackMetadataFromSpotify(){
   if(!spotifyAccessToken) return;
-  const targets = tracks.filter(t => t.spotifyId);
+  // 2026年の仕様変更で複数曲まとめての取得(/tracks?ids=)が使えなくなったため、
+  // アーティスト名が空の曲だけを1曲ずつ補完する(アクセス回数を抑えるため最大60曲)
+  const targets = tracks.filter(t => t.spotifyId && !t.artist).slice(0, 60);
   if(targets.length === 0) return;
-
-  const chunkSize = 50; // Web APIの /v1/tracks は一度に最大50件まで
-  for(let i = 0; i < targets.length; i += chunkSize){
-    const chunk = targets.slice(i, i + chunkSize);
-    const ids = chunk.map(t => t.spotifyId).join(',');
-    try{
-      const res = await fetch(`https://api.spotify.com/v1/tracks?ids=${encodeURIComponent(ids)}`, {
-        headers: { 'Authorization': 'Bearer ' + spotifyAccessToken }
-      });
-      if(!res.ok) continue;
-      const data = await res.json();
-      (data.tracks || []).forEach((info, idx) => {
-        if(!info) return;
-        const track = chunk[idx];
-        track.title = info.name || track.title;
-        if(info.artists && info.artists.length){
-          track.artist = info.artists.map(a => a.name).join(', ');
-        }
-      });
-    } catch(err){
-      console.error(err);
-    }
+  for(let i = 0; i < targets.length; i += 3){
+    const chunk = targets.slice(i, i + 3);
+    await Promise.all(chunk.map(async (track) => {
+      try{
+        const res = await fetch('https://api.spotify.com/v1/tracks/' + encodeURIComponent(track.spotifyId), {
+          headers: { 'Authorization': 'Bearer ' + spotifyAccessToken }
+        });
+        if(!res.ok) return;
+        const info = await res.json();
+        if(info.name) track.title = info.name;
+        if(info.artists && info.artists.length) track.artist = info.artists.map(a => a.name).join(', ');
+      }catch(err){ console.error(err); }
+    }));
+    if(typeof spotifyBackoffUntil !== 'undefined' && Date.now() < spotifyBackoffUntil) break;
   }
   render();
+  saveState();
 }
 
 // 再生バー(経過時間・プログレスバー)をSpotifyの再生状態に合わせて定期的に更新する
@@ -4161,6 +4156,7 @@ function showReloginHint(){
   document.getElementById('reloginBtn').addEventListener('click', () => { spotifyLogout(); loginBtn.click(); });
 }
 const LIKED_ID = '__liked__';
+const OTHERS_PLAYLIST_MSG = 'Spotifyの仕様変更(2026年)で、他の人が作ったプレイリストは直接読み込めなくなりました。Spotifyアプリでこのプレイリストを開き、曲を全選択(Cmd+A)→コピー(Cmd+C)して、Skewの「曲を追加」欄に貼り付けてください';
 function apiPath(url){ return url ? url.replace('https://api.spotify.com/v1', '') : null; }
 loadSpotifyPlaylistsBtn.addEventListener('click', async () => {
   if(!spotifyAccessToken) return;
@@ -4184,12 +4180,15 @@ loadSpotifyPlaylistsBtn.addEventListener('click', async () => {
         <div class="pl-main"><span class="pl-name">♥ お気に入りの曲</span><small>${likedTotal}曲</small></div>
         <button class="btn-copy" type="button" data-import>読み込む</button>
       </div>`;
+    let myId = null;
+    try{ myId = (await spotifyGet('/me')).id; }catch(e){}
     spotifyPlaylistListEl.innerHTML = likedHtml + items.map(pl => {
       const img = pl.images && pl.images.length ? pl.images[pl.images.length - 1].url : '';
       const total = (pl.tracks && pl.tracks.total) || (pl.items && pl.items.total) || 0;
-      return `<div class="pl-row sp" data-sp="${escapeHtml(pl.id)}" data-name="${escapeHtml(pl.name)}">
+      const others = myId && pl.owner && pl.owner.id !== myId && !pl.collaborative;
+      return `<div class="pl-row sp" data-sp="${escapeHtml(pl.id)}" data-name="${escapeHtml(pl.name)}"${others ? ' data-others="1"' : ''}>
         ${img ? `<img src="${escapeHtml(img)}" alt="">` : ''}
-        <div class="pl-main"><span class="pl-name">${escapeHtml(pl.name)}</span><small>${total}曲</small></div>
+        <div class="pl-main"><span class="pl-name">${escapeHtml(pl.name)}</span><small>${others ? '他の人のプレイリスト(貼り付けで追加)' : (total + '曲')}</small></div>
         <button class="btn-copy" type="button" data-import>読み込む</button>
       </div>`;
     }).join('');
@@ -4224,7 +4223,7 @@ spotifyPlaylistListEl.addEventListener('click', async (e) => {
       });
       next = apiPath(data.next);
     }
-    if(found.length === 0) throw new Error('曲が見つかりませんでした');
+    if(found.length === 0) throw new Error(row.dataset.others ? OTHERS_PLAYLIST_MSG : '曲が見つかりませんでした');
     const newTracks = found.map((t, i) => ({
       id: i + 1, title: t.title, artist: t.artist, weight: 50, spotifyId: t.spotifyId, addedAt: nextAddedAt()
     }));
@@ -4235,7 +4234,8 @@ spotifyPlaylistListEl.addEventListener('click', async (e) => {
     console.error(err);
     btn.disabled = false;
     btn.textContent = '読み込む';
-    if(needsRelogin(err)) showReloginHint();
+    if(err.status === 403 || row.dataset.others){ showToast(OTHERS_PLAYLIST_MSG, { error: true }); }
+    else if(needsRelogin(err)) showReloginHint();
     else showToast('読み込めませんでした: ' + err.message, { error: true });
   }
 });

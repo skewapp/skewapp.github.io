@@ -1,7 +1,7 @@
 // Skew用の簡易サービスワーカー。
 // アプリとしてインストールできるようにする(PWAの要件)ためのもので、
 // オフライン時は最低限このページ自体を表示できるようにする。
-const CACHE_NAME = 'skew-cache-v32';
+const CACHE_NAME = 'skew-cache-v33';
 const CORE_ASSETS = [
   './',
   './index.html',
